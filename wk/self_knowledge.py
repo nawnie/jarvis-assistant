@@ -1,4 +1,6 @@
 """Bounded, read-only facts Jarvis can tell Shawn about itself."""
+import urllib.error
+
 from . import config, delegate_tools
 
 
@@ -28,12 +30,14 @@ def status_text(engine):
     seen = "; ".join(f"{name}: {title}" for name, title in task_windows) or "none observed"
     links = delegate_tools.available()
     pending = len(engine.store.fact_candidates())
+    model_status = _model_status(engine)
     return (
         "Jarvis Assistant status:\n"
         f"- Source: {config.APP_DIR}\n"
         f"- Settings file: {config.CONFIG_PATH}\n"
         f"- Local database: {config.DB_PATH}\n"
         f"- Watching: {'on' if engine.watching else 'paused'}\n"
+        f"- Model chat: {model_status}\n"
         f"- Memory suggestions waiting for Shawn: {pending}; none are recalled until kept.\n"
         f"- Bonsai 8B consultations: {'enabled' if engine.cfg.get('tool_use_8b', False) else 'disabled'}; "
         f"Claude CLI {'installed' if links['claude'] else 'missing'}, "
@@ -49,6 +53,35 @@ def status_text(engine):
         "and /processes for a read-only RAM snapshot. /stop requires Shawn's exact PID and identity. "
         "I do not run arbitrary shell commands or edit my source or settings from chat."
     )
+
+
+def _model_status(engine):
+    """Report a bounded, credential-free check of Jarvis's configured model endpoint."""
+    llm = getattr(engine, "llm", None)
+    if llm is None or not hasattr(llm, "_get"):
+        return "online" if getattr(engine, "llm_online", False) else "offline; local model client unavailable"
+    try:
+        llm._get("/models", timeout=3)
+        return "online"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            reason = "configured API key rejected (HTTP 401)"
+        elif exc.code == 404:
+            reason = "HTTP 404; check the configured endpoint"
+        else:
+            reason = f"model service returned HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ConnectionRefusedError):
+            reason = "no model server is listening at the configured endpoint"
+        elif isinstance(exc.reason, TimeoutError):
+            reason = "model service timed out"
+        else:
+            reason = "could not reach the configured local model service"
+    except TimeoutError:
+        reason = "model service timed out"
+    except Exception:
+        reason = "availability check failed; see the private Jarvis log"
+    return f"offline; {reason}"
 
 
 def objectives_text(engine):

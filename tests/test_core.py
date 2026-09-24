@@ -371,6 +371,44 @@ def test_no_key_file_means_no_auth_header():
     assert "Authorization" not in LocalLLM({"llm_key_file": ""})._headers()
 
 
+def test_status_reports_model_endpoint_reason_without_secrets(monkeypatch):
+    from urllib.error import URLError
+    from types import SimpleNamespace
+    from wk import self_knowledge
+
+    def refused(*_args, **_kwargs):
+        raise URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(self_knowledge.delegate_tools, "available", lambda: {"claude": False, "codex": False})
+    engine = SimpleNamespace(
+        task_windows=[], store=SimpleNamespace(fact_candidates=lambda: []), watching=True,
+        llm_online=False, llm=SimpleNamespace(_get=refused),
+        cfg={"tool_use_8b": False, "read_local_task_prompts": True},
+    )
+    text = self_knowledge.status_text(engine)
+    assert "Model chat: offline" in text
+    assert "no model server is listening" in text
+
+
+def test_status_redacts_model_server_error_details(monkeypatch):
+    from urllib.error import URLError
+    from types import SimpleNamespace
+    from wk import self_knowledge
+
+    def secret_error(*_args, **_kwargs):
+        raise URLError("Bearer highly-secret-token")
+
+    monkeypatch.setattr(self_knowledge.delegate_tools, "available", lambda: {"claude": False, "codex": False})
+    engine = SimpleNamespace(
+        task_windows=[], store=SimpleNamespace(fact_candidates=lambda: []), watching=True,
+        llm_online=False, llm=SimpleNamespace(_get=secret_error),
+        cfg={"tool_use_8b": False, "read_local_task_prompts": True},
+    )
+    text = self_knowledge.status_text(engine)
+    assert "could not reach the configured local model service" in text
+    assert "highly-secret-token" not in text
+
+
 # --- pointer helpers -----------------------------------------------------------------------
 def test_friendly_type_and_description():
     from wk import pointer
