@@ -6,6 +6,7 @@
 [![UI: PySide6](https://img.shields.io/badge/UI-PySide6-41CD52)](https://doc.qt.io/qtforpython-6/)
 [![Bonsai 8B](https://img.shields.io/badge/model-Bonsai%208B-26B8D9)](https://huggingface.co/prism-ml/Ternary-Bonsai-8B-gguf)
 [![Bonsai 2 27B](https://img.shields.io/badge/away%20model-Bonsai%202%2027B-26B8D9)](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-397D54)](LICENSE)
 
 A persistent Windows tray assistant for Shawn's AI Embedded Systems work. Jarvis tracks selected local activity, keeps explicit memory and objectives, answers through a local model, and can continue bounded project work while Shawn is away. The HUD is built with PySide6.
 
@@ -37,6 +38,12 @@ Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent
 
 The code's defaults include paths for the original development PC. The sample config disables model start and observation so a fresh public checkout does not use those paths or begin monitoring. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`.
 
+## License and credit
+
+Jarvis Assistant is available under the [PolyForm Noncommercial License 1.0.0](LICENSE). You may use, modify, and share it for permitted noncommercial purposes. If you share any part of it, keep the license terms and the [required notice](NOTICE), which credits Shawn and links to the original repository. Commercial use needs a separate license from the project owner. This is a source-available project with a noncommercial restriction, not an OSI open-source license.
+
+Required Notice: Jarvis Assistant Copyright 2026 Shawn (nawnie). Original project: https://github.com/nawnie/jarvis-assistant
+
 ## Screenshots
 
 Captured from isolated UI test data on 2026-09-24. Entries shown are synthetic; these captures do not demonstrate live model inference.
@@ -51,4 +58,4 @@ Captured from isolated UI test data on 2026-09-24. Entries shown are synthetic; 
 
 Additional views: [Chat](screenshots/chat.png), [Projects](screenshots/projects.png), [Settings](screenshots/settings.png).
 
-The 27B self-repair workflow and automatic conversion of observed tasks into independent objectives are planned work. The source is public; no software license has been selected for this repository.
+The 27B self-repair workflow and automatic conversion of observed tasks into independent objectives are planned work.
