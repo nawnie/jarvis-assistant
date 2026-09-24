@@ -10,7 +10,7 @@
 - `/status` now probes the configured local model endpoint and reports a credential-free failure reason. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
 - During the 2026-09-24 review, Jarvis's configured local model endpoint had no server listening. Model-backed chat through the Jarvis app therefore remains unverified.
 - A text-only Bonsai 2 27B CLI review ran separately under the local VRAM guard. It reviewed supplied release-readiness notes; it did not run inside Jarvis, change model weights, or add memory to Jarvis.
-- Recent main-branch GitHub Actions results were green before this change. The workflow badge in the README reports the automated checks only.
+- GitHub Actions run [36062613907](https://github.com/nawnie/jarvis-assistant/actions/runs/36062613907) passed for this branch's status change on 2026-09-24. It runs the repository's lint and core-test workflow; it does not prove live model inference or a user-profile install.
 
 ## Release milestones
 
