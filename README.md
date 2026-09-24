@@ -1,6 +1,6 @@
 # Jarvis Assistant — UI gallery
 
-Jarvis Assistant is Shawn's local Windows assistant. This private repository holds screenshots of its current desktop interface; the application source and local data are not included.
+Jarvis Assistant is Shawn's local Windows assistant. This repository holds screenshots of its current desktop interface; the application source and local data are not included.
 
 The images were captured from an isolated UI test instance on 2026-09-24. Activity, memory, and chat entries shown here are synthetic. The local model was not loaded for these captures.
 
