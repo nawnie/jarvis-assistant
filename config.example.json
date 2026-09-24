@@ -1,0 +1,20 @@
+{
+  "watching": false,
+  "watch_windows": false,
+  "watch_task_windows": false,
+  "read_local_task_prompts": false,
+  "watch_clipboard": false,
+  "watch_folders": false,
+  "explain_on_click": false,
+  "quick_ask_hotkey": false,
+  "remote_api_enabled": false,
+  "projects_enabled": false,
+  "tool_use_8b": false,
+  "memory_capture_mode": "off",
+  "llm_autostart_server": false,
+  "away_model_enabled": false,
+  "llm_base_url": "http://127.0.0.1:8084/v1",
+  "llm_server_exe": "C:\\path\\to\\prism-llama.cpp\\llama-server.exe",
+  "llm_model_file": "C:\\path\\to\\Ternary-Bonsai-8B-PQ2_0.gguf",
+  "away_model_file": "C:\\path\\to\\Ternary-Bonsai-2-27B-PQ2_0.gguf"
+}

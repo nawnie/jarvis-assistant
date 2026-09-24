@@ -1,0 +1,23 @@
+name: Python checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check Python source
+        run: python -m pyflakes wk jarvis_assistant.pyw tests/test_core.py
+      - name: Run isolated unit tests
+        env:
+          JARVIS_NO_MODEL_CONTROL: '1'
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/test_core.py -q
