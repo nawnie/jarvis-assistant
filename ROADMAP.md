@@ -1,6 +1,6 @@
 # Jarvis Assistant MVP Roadmap
 
-**Last reviewed:** 2026-09-24
+**Last reviewed:** 2026-09-25
 
 **Status:** MVP hardening in progress. The Windows app, setup guide, and deterministic checks are present. End-to-end model-backed operation on a clean user installation has not been demonstrated.
 
@@ -9,6 +9,7 @@
 - `/status` now probes the configured local model endpoint and reports a credential-free failure reason. Its output includes local source, settings, and database paths; redact it before sharing. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
 - During the 2026-09-24 review, Jarvis's configured local model endpoint had no server listening. Model-backed chat through the Jarvis app therefore remains unverified.
 - A text-only Bonsai 2 27B CLI review ran separately under the local VRAM guard. It reviewed supplied release-readiness notes; it did not run inside Jarvis, change model weights, or add memory to Jarvis.
+- `ModelManager._start()` keeps its detached tray-launch default and adds an opt-in `detached=False` mode for guarded callers. A regression test checks that attached mode omits `DETACHED_PROCESS`; this is process-launch coverage, not Jarvis UI or user-install acceptance.
 - GitHub Actions run [36084658502](https://github.com/nawnie/jarvis-assistant/actions/runs/36084658502) passed on commit `c907dac`, the draft PR head at that time, including dependency installation, `pyflakes`, and the isolated core-test suite. It does not prove live model inference or a clean user-profile install.
 
 ## Release milestones
@@ -18,7 +19,7 @@
 | Reliable offline behavior | Safe sample config; app starts without monitoring or model autostart; status explains endpoint failures without disclosing credentials | Code and isolated checks; restart/live check pending |
 | First-run Windows acceptance | Follow setup from a fresh Windows user profile, configure data and model paths, start and stop cleanly, and verify recovery after endpoint loss and return | Not demonstrated |
 | Conversation MVP | Exercise chat, memory suggestions, explicit KEEP review, and one bounded project objective against the intended local model; retain the test scope and receipt | Not demonstrated through Jarvis's model endpoint |
-| 27B away-work review | Show the configured model fits available VRAM with guard headroom, produces a useful review, and unloads cleanly; keep any file changes proposal-only until user approval | Planned; no Jarvis-integrated acceptance |
+| 27B away-work review | Show the configured model fits available VRAM with guard headroom, produces a useful review, and unloads cleanly; keep any file changes proposal-only until user approval | Attached launch support and flag regression test added; Jarvis UI acceptance and a production self-repair flow remain open |
 | User release package | Document install, upgrade, backup, recovery, data location, supported Windows/Python versions, and known limitations; validate on a clean machine | Not demonstrated |
 | Commercial release decision | Obtain separate project-owner license permission and qualified legal review before commercial use | Open; current license is noncommercial |
 

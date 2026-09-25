@@ -145,7 +145,8 @@ class ModelManager:
         if not self.our_server_pids():
             self.owner_path.unlink(missing_ok=True)
 
-    def _start(self, name, wait=240):
+    def _start(self, name, wait=240, *, detached=True):
+        """Start one model profile; guarded callers can keep the server in their child tree."""
         if self.our_server_pids():
             self._stop_ours()
         if self._port_in_use():
@@ -167,10 +168,12 @@ class ModelManager:
                 "-c", str(p["ctx"]), "-ngl", str(self.cfg.get("llm_gpu_layers", 999)), "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
                 "--parallel", "1", "--reasoning", "off", "--alias", p["alias"]]
         # the server keeps its own copy of the log handle; ours is closed as soon as it has started
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        if detached:
+            creationflags |= subprocess.DETACHED_PROCESS
         with open(self.log_path, "ab") as log:
             process = subprocess.Popen(args, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-                             | subprocess.CREATE_NEW_PROCESS_GROUP)
+                                       creationflags=creationflags)
         try:
             owner = {"pid": process.pid, "created": psutil.Process(process.pid).create_time(),
                      "exe": str(Path(self.cfg["llm_server_exe"]).resolve()), "model": p["file"]}
