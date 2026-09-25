@@ -6,11 +6,10 @@
 
 ## Current checkpoint
 
-- The core suite passed **81 tests** on the local Windows source checkout, and `pyflakes` reported no findings. These checks do not prove live model inference or installation on another PC.
-- `/status` now probes the configured local model endpoint and reports a credential-free failure reason. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
+- `/status` now probes the configured local model endpoint and reports a credential-free failure reason. Its output includes local source, settings, and database paths; redact it before sharing. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
 - During the 2026-09-24 review, Jarvis's configured local model endpoint had no server listening. Model-backed chat through the Jarvis app therefore remains unverified.
 - A text-only Bonsai 2 27B CLI review ran separately under the local VRAM guard. It reviewed supplied release-readiness notes; it did not run inside Jarvis, change model weights, or add memory to Jarvis.
-- GitHub Actions run [36062613907](https://github.com/nawnie/jarvis-assistant/actions/runs/36062613907) passed for this branch's status change on 2026-09-24. It runs the repository's lint and core-test workflow; it does not prove live model inference or a user-profile install.
+- GitHub Actions run [36084658502](https://github.com/nawnie/jarvis-assistant/actions/runs/36084658502) passed on commit `c907dac`, the draft PR head at that time, including dependency installation, `pyflakes`, and the isolated core-test suite. It does not prove live model inference or a clean user-profile install.
 
 ## Release milestones
 
