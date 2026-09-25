@@ -371,6 +371,44 @@ def test_no_key_file_means_no_auth_header():
     assert "Authorization" not in LocalLLM({"llm_key_file": ""})._headers()
 
 
+def test_status_reports_model_endpoint_reason_without_secrets(monkeypatch):
+    from urllib.error import URLError
+    from types import SimpleNamespace
+    from wk import self_knowledge
+
+    def refused(*_args, **_kwargs):
+        raise URLError(ConnectionRefusedError("refused"))
+
+    monkeypatch.setattr(self_knowledge.delegate_tools, "available", lambda: {"claude": False, "codex": False})
+    engine = SimpleNamespace(
+        task_windows=[], store=SimpleNamespace(fact_candidates=lambda: []), watching=True,
+        llm_online=False, llm=SimpleNamespace(_get=refused),
+        cfg={"tool_use_8b": False, "read_local_task_prompts": True},
+    )
+    text = self_knowledge.status_text(engine)
+    assert "Model chat: offline" in text
+    assert "no model server is listening" in text
+
+
+def test_status_redacts_model_server_error_details(monkeypatch):
+    from urllib.error import URLError
+    from types import SimpleNamespace
+    from wk import self_knowledge
+
+    def secret_error(*_args, **_kwargs):
+        raise URLError("Bearer highly-secret-token")
+
+    monkeypatch.setattr(self_knowledge.delegate_tools, "available", lambda: {"claude": False, "codex": False})
+    engine = SimpleNamespace(
+        task_windows=[], store=SimpleNamespace(fact_candidates=lambda: []), watching=True,
+        llm_online=False, llm=SimpleNamespace(_get=secret_error),
+        cfg={"tool_use_8b": False, "read_local_task_prompts": True},
+    )
+    text = self_knowledge.status_text(engine)
+    assert "could not reach the configured local model service" in text
+    assert "highly-secret-token" not in text
+
+
 # --- pointer helpers -----------------------------------------------------------------------
 def test_friendly_type_and_description():
     from wk import pointer
@@ -760,6 +798,39 @@ def test_model_manager_recognizes_only_recorded_process_identity(monkeypatch, tm
     m.owner_path.write_text(json.dumps({"pid": 45678, "created": 201.0,
                                         "exe": str(exe), "model": model}), encoding="utf-8")
     assert m.our_server_pids() == [] and killed == [45678]
+
+
+def test_model_server_can_remain_in_guard_owned_process_tree(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from wk import models
+
+    exe = tmp_path / "llama-server.exe"
+    model = tmp_path / "bonsai.gguf"
+    exe.touch()
+    model.touch()
+    cfg = {"llm_server_exe": str(exe), "llm_base_url": "http://127.0.0.1:8085/v1",
+           "away_model_file": str(model), "away_model_alias": "bonsai-27b", "away_model_ctx": 32768,
+           "llm_gpu_layers": 999}
+    manager = models.ModelManager(cfg, tmp_path / "server.log", lambda _event: None)
+    pids = []
+    seen = []
+    monkeypatch.setattr(manager, "our_server_pids", lambda: pids)
+    monkeypatch.setattr(manager, "_port_in_use", lambda: False)
+    monkeypatch.setattr(manager, "_health", lambda: True)
+    monkeypatch.setattr(models.psutil, "Process", lambda _pid: SimpleNamespace(create_time=lambda: 10.0))
+
+    def fake_popen(_args, **kwargs):
+        seen.append(kwargs)
+        pids.append(12345)
+        return SimpleNamespace(pid=12345)
+
+    monkeypatch.setattr(models.subprocess, "Popen", fake_popen)
+    assert manager._start("big", wait=1) is True
+    assert seen[-1]["creationflags"] & models.subprocess.DETACHED_PROCESS
+
+    pids.clear()
+    assert manager._start("big", wait=1, detached=False) is True
+    assert not seen[-1]["creationflags"] & models.subprocess.DETACHED_PROCESS
 
 
 def test_consult_cli_is_bounded_and_uses_current_question_only(monkeypatch, tmp_path):

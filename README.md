@@ -23,7 +23,7 @@ The configured PQ2_0 files use [PrismML's llama.cpp build](https://github.com/Pr
 
 - **Now:** mission, memory and tool status, current focus, system gauges, and recent events.
 - **Memory Core:** KEEP / SENSE / ACT / VOICE controls for recall, observation windows, consultations, and reply style. Bonsai 8B can propose facts from Shawn's chat; suggestions need review before joining long-term memory.
-- **Chat and tools:** `/status`, `/settings`, `/files`, `/objectives`, `/tools`, and `/processes` report bounded local state. `/stop PID IDENTITY` acts only on an explicitly selected process. Bonsai 8B can choose one bounded Claude or Codex CLI consultation per reply when enabled; their MCP tools are not passed through.
+- **Chat and tools:** `/status`, `/settings`, `/files`, `/objectives`, `/tools`, and `/processes` report bounded local state. `/status` checks the configured model endpoint and gives a sanitized reason when it is unavailable. Its output also includes local source, settings, and database paths; redact it before sharing. `/stop PID IDENTITY` acts only on an explicitly selected process. Bonsai 8B can choose one bounded Claude or Codex CLI consultation per reply when enabled; their MCP tools are not passed through.
 - **Projects:** an explicit objective can be worked in a bounded project workspace while away. Observed Claude/Codex task prompts are hints for matching an existing objective, not automatic new assignments.
 
 Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent local Codex and Claude Code user requests only when the relevant settings and Watching are enabled. Raw local data stays in `data/`, which is ignored by Git.
@@ -35,6 +35,8 @@ Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent
 3. Create the runtime settings folder and copy the safe sample: `mkdir data` then `copy config.example.json data\config.json`.
 4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, or the phone API only after reviewing their settings.
 5. Start with `run.bat`. The app stays in the tray when its window closes.
+
+For the supported launcher switch and its effect, see [Launch arguments](docs/LAUNCH_ARGS.md).
 
 The code's defaults include paths for the original development PC. The sample config disables model start and observation so a fresh public checkout does not use those paths or begin monitoring. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`.
 
@@ -58,4 +60,4 @@ Captured from isolated UI test data on 2026-09-24. Entries shown are synthetic; 
 
 Additional views: [Chat](screenshots/chat.png), [Projects](screenshots/projects.png), [Settings](screenshots/settings.png).
 
-The 27B self-repair workflow and automatic conversion of observed tasks into independent objectives are planned work.
+The 27B self-repair workflow and automatic conversion of observed tasks into independent objectives are planned work. See the [MVP roadmap and release gates](ROADMAP.md) for current evidence and next steps.

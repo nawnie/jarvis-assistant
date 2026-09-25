@@ -13,3 +13,7 @@ Bonsai 8B may choose a single Claude or Codex CLI consultation for a question wh
 ## Bonsai 2 27B self-repair lane
 
 This lane is a design target, not shipped. Any future repair should use a reviewed source snapshot, an isolated workspace, deterministic checks, and a separate acceptance step before live source changes.
+
+### Guarded model process ownership
+
+`ModelManager._start()` still defaults to a detached process for ordinary tray operation. A caller launching a bounded workload through Sentinel can pass `detached=False`; the server then remains in the guard's descendant process tree so a cutoff can terminate it with the caller. This internal launch mode has a regression test, but does not add a user-facing review command or prove a live Jarvis UI flow.
