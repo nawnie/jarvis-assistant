@@ -36,6 +36,8 @@ Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent
 4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, or the phone API only after reviewing their settings.
 5. Start with `run.bat`. The app stays in the tray when its window closes.
 
+For the supported launcher switch and its effect, see [Launch arguments](docs/LAUNCH_ARGS.md).
+
 The code's defaults include paths for the original development PC. The sample config disables model start and observation so a fresh public checkout does not use those paths or begin monitoring. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`.
 
 ## License and credit
