@@ -13,6 +13,13 @@ from wk import config, mcp_client, tool_registry
 
 
 class MCPClientTests(unittest.TestCase):
+    def test_connection_close_releases_event_loop(self):
+        connection = mcp_client._Connection("fake", {"transport": "stdio", "command": "unused"})
+        connection.close()
+        self.assertFalse(connection.thread.is_alive())
+        self.assertTrue(connection.loop.is_closed())
+        connection.close()
+
     def test_media_result_is_saved_with_hash(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(config, "DATA_DIR", Path(directory)):
             data = b"synthetic media bytes"

@@ -251,6 +251,8 @@ class _Connection:
 
     def close(self):
         if self.closing:
+            if not self.thread.is_alive() and not self.loop.is_closed():
+                self.loop.close()
             return
         self.closing = True
         reply = Future()
@@ -261,6 +263,8 @@ class _Connection:
         finally:
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(timeout=10)
+            if not self.thread.is_alive():
+                self.loop.close()
 
 
 def _get(cfg: dict, name: str) -> _Connection:
