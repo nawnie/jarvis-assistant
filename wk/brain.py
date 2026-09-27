@@ -214,7 +214,8 @@ class Engine(QObject):
             on_error=lambda text: self.hook_failed.emit(text),
             on_hotkey=lambda: self.cfg["quick_ask_hotkey"] and self.hotkey_pressed.emit(),
             hotkey_wanted=lambda: bool(self.cfg["quick_ask_hotkey"]))
-        self.mouse.start()
+        if self.cfg["quick_ask_hotkey"] or (self.watching and self.cfg["explain_on_click"]):
+            self.mouse.start()
 
     @Slot(str)
     def _on_hook_failed(self, text):
@@ -256,6 +257,9 @@ class Engine(QObject):
             self.models.cfg = self.cfg
             self.llm.alias_fn = self.models.alias
         if hasattr(self, "mouse"):   # hold Ctrl+Alt+J only while the setting is on
+            if (not self.mouse.is_alive() and self.mouse.ident is None
+                    and (self.cfg["quick_ask_hotkey"] or (self.watching and self.cfg["explain_on_click"]))):
+                self.mouse.start()
             self.mouse.set_hotkey(bool(self.cfg["quick_ask_hotkey"]))
 
     def save_config(self, cfg):
@@ -266,6 +270,9 @@ class Engine(QObject):
     def set_watching(self, on: bool, pause_minutes: int = 0):
         """Master switch used by the tray menu and the GUI toggle."""
         self.watching = on
+        if (on and self.cfg["explain_on_click"] and not self.mouse.is_alive()
+                and self.mouse.ident is None):
+            self.mouse.start()
         self.paused_until = time.time() + pause_minutes * 60 if (not on and pause_minutes) else 0.0
         self.cfg["watching"] = on or bool(pause_minutes)  # a timed pause resumes after restart too
         config.save(self.cfg)
@@ -288,16 +295,20 @@ class Engine(QObject):
         now = time.time()
         if self.paused_until and now >= self.paused_until:
             self.set_watching(True)
-        idle = sensors.idle_seconds()
+        away_features_on = bool(self.cfg["llm_enabled"] or self.cfg["projects_enabled"])
+        idle = sensors.idle_seconds() if (self.watching or away_features_on) else 0.0
         # the timer doesn't run while the PC sleeps, so a long gap between ticks means you were away
         gap = now - self._last_tick_time
         self._last_tick_time = now
         if gap > 120 and self.away_since is None:
             self.away_since = now - gap
-        process, title = sensors.foreground_window()
+        process, title = sensors.foreground_window() if self.cfg["watch_windows"] else ("", "")
         private = self.is_private(process, title)
         self.current = ("(private)", "") if private else (process, title)
-        self._away_mode(now, idle, gap)
+        if away_features_on:
+            self._away_mode(now, idle, gap)
+        else:
+            self.system_away_since = None
 
         if self.watching:
             if idle >= self.cfg["idle_seconds"]:

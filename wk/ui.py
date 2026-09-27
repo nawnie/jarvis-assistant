@@ -422,10 +422,13 @@ class MainWindow(QMainWindow):
         # the crash doctor: once a minute, new crashes / hangs / GPU driver resets from the Windows logs.
         # The first check only learns what's already there (old crashes aren't announced).
         self.doctor = crash_doctor.CrashDoctor()
-        self._doctor_timer = QTimer(self, interval=60_000,
-                                    timeout=lambda: run_async(self.doctor.poll, self._crashes_found))
+        def poll_doctor():
+            if self.engine.cfg.get("watch_system", False):
+                run_async(self.doctor.poll, self._crashes_found)
+
+        self._doctor_timer = QTimer(self, interval=60_000, timeout=poll_doctor)
         self._doctor_timer.start()
-        run_async(self.doctor.poll, self._crashes_found)
+        poll_doctor()
         # the download helper: the engine hands every new file in a watched folder to this hook
         engine.file_hook = self._new_file_seen
 
@@ -438,14 +441,14 @@ class MainWindow(QMainWindow):
         self._voice_request = None
         self.card.visibility_changed.connect(self._card_closed_stop_speaking)
         QApplication.instance().aboutToQuit.connect(self.voice.stop)
-        if engine.cfg.get("voice_enabled", True) and model_control_allowed():
+        if engine.cfg.get("voice_enabled", False) and model_control_allowed():
             QTimer.singleShot(3000, self.voice.start)          # after the window is up
 
         # smart Recall (wk/semantic.py): meaning search over everything Jarvis has seen. The index is
         # topped up every 10 minutes on the CPU; the embedding server stops itself after 10 idle minutes.
         self.recall = semantic.SmartRecall(self.store, lambda: self.engine.cfg.get("llm_server_exe", ""))
         self._recall_timer = QTimer(self, interval=600_000, timeout=self._refresh_recall_index)
-        if engine.cfg.get("recall_semantic", True) and model_control_allowed():
+        if engine.cfg.get("recall_semantic", False) and model_control_allowed():
             self._recall_timer.start()
             QTimer.singleShot(90_000, self._refresh_recall_index)
         QApplication.instance().aboutToQuit.connect(self.recall.server.stop)
@@ -913,7 +916,11 @@ class MainWindow(QMainWindow):
             self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused until "
                                      f"{hhmm(self.engine.paused_until)}")
         else:
-            self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused - focus and alerts may still be logged")
+            detail = ("Paused - focus and alerts may still be logged"
+                      if any(self.engine.cfg.get(key, False) for key in
+                             ("watch_windows", "watch_system", "voice_enabled", "recall_semantic"))
+                      else "Paused - observation off")
+            self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;{detail}")
         # both reactors go grey and still while paused
         mode = "online" if on else "paused"
         self.reactor.set_mode(mode)
@@ -1656,7 +1663,7 @@ class MainWindow(QMainWindow):
         run_async(lambda: (self.recall.refresh(), self.recall.server.stop_if_idle()), lambda _r: None)
 
     def _smart_recall_on(self):
-        return self.engine.cfg.get("recall_semantic", True) and model_control_allowed()
+        return self.engine.cfg.get("recall_semantic", False) and model_control_allowed()
 
     def _show_recall_rows(self):
         fill_table(self.rc_table, [
@@ -1895,7 +1902,7 @@ class Tray(QSystemTrayIcon):
         menu.addAction("Pause 2 hours", lambda: engine.set_watching(False, 120))
         menu.addSeparator()
         self.voice_action = QAction('Listen for "Hey Jarvis"', menu, checkable=True,
-                                    checked=bool(engine.cfg.get("voice_enabled", True)))
+                                    checked=bool(engine.cfg.get("voice_enabled", False)))
         self.voice_action.toggled.connect(window.set_voice)
         menu.addAction(self.voice_action)
         menu.addAction("Voice act this game (Ctrl+Alt+V)", lambda: window.toggle_voice_acting())

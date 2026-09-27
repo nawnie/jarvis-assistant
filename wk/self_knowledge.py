@@ -78,7 +78,7 @@ def status_text(engine):
            if engine.cfg.get("pc_actions_enabled", True) else
            "- PC actions: off in settings, so I can describe steps but not do them.")
         + ("\n- Voice: ON. Shawn can say 'Hey Jarvis' and talk to me; I answer out loud (British voice), and "
-           "voice requests can do everything chat can." if engine.cfg.get("voice_enabled", True) else "")
+           "voice requests can do everything chat can." if engine.cfg.get("voice_enabled", False) else "")
     )
 
 

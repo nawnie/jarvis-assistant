@@ -173,6 +173,8 @@ SAFE_UNCONFIGURED_DEFAULTS = {
     "keep_pc_awake": False,
     "away_model_enabled": False,
     "away_free_comfyui": False,
+    "voice_enabled": False,
+    "recall_semantic": False,
     "projects_enabled": False,
     "remote_api_enabled": False,
     "welcome_back": False,

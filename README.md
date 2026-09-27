@@ -35,14 +35,14 @@ Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent
 1. Install Python 3.13 and create a local environment: `py -3.13 -m venv .venv`.
 2. Install the dependencies: `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 3. Create the runtime settings folder and copy the safe sample: `mkdir data` then `copy config.example.json data\config.json`.
-4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, or the phone API only after reviewing their settings.
+4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, voice listening, semantic Recall, or the phone API only after reviewing their settings.
 5. Start with `run.bat`. The app stays in the tray when its window closes.
 
 Optional local MCP support uses `requirements-mcp.txt` and the disabled `mcp_servers.example.json` template. Select a server and its allowed tools explicitly; a configured server is not automatically trusted. The file/test policy also contains original-machine path defaults. Review and adapt those fixed roots before enabling model file tools on another PC. Missing, invalid, or partial config fails closed for observation, model autostart, phone API, project work, and 8B tools. Selected-root file tools additionally require an owner-managed protected-path policy; see [file and test policy](OWNER_FILE_AND_TEST_POLICY.md). The current local install allows writes only in a selected Jarvis workspace until the owner registers more project roots.
 
 For the supported launcher switch and its effect, see [Launch arguments](docs/LAUNCH_ARGS.md).
 
-The code's defaults include paths for the original development PC, but a fresh checkout with no valid config does not begin monitoring or start a model. The sample config also leaves those features off. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`. The [roadmap](ROADMAP.md) separates local source/model tests from first-run, native UI, physical-phone, and image-generation acceptance.
+The code's defaults include paths for the original development PC, but a fresh checkout with no valid config does not begin monitoring, open the microphone, build a semantic index, or start a model. The sample config also leaves those features off. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`. The [roadmap](ROADMAP.md) separates local source/model tests from first-run, native UI, physical-phone, and image-generation acceptance.
 
 ## License and credit
 

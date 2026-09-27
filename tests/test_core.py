@@ -170,6 +170,7 @@ def test_unconfigured_or_invalid_config_keeps_side_effects_off(tmp_path, monkeyp
             "watch_clipboard", "watch_folders", "watch_system", "llm_enabled",
             "llm_autostart_server", "away_model_enabled", "remote_api_enabled",
             "projects_enabled", "explain_on_click", "quick_ask_hotkey",
+            "voice_enabled", "recall_semantic",
         ))
         assert loaded["memory_capture_mode"] == "off"
 
@@ -182,6 +183,28 @@ def test_unconfigured_or_invalid_config_keeps_side_effects_off(tmp_path, monkeyp
     path.write_text(json.dumps({"watching": True, "remote_api_enabled": True}), encoding="utf-8")
     explicit = config.load()
     assert explicit["watching"] is True and explicit["remote_api_enabled"] is True
+
+
+def test_unconfigured_engine_does_not_install_global_mouse_hook(qapp, tmp_path, monkeypatch):
+    from wk import brain, pointer
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(brain.instance, "claim", lambda: True)
+    starts = []
+    monkeypatch.setattr(pointer.MouseTrigger, "start", lambda self: starts.append(True))
+    engine = brain.Engine()
+    try:
+        assert starts == []
+        engine.cfg["explain_on_click"] = True
+        engine.set_watching(True)
+        assert starts == [True]
+    finally:
+        for timer in (engine.t_tick, engine.t_stats, engine.t_folders,
+                      engine.t_task_windows, engine.t_chores):
+            timer.stop()
+        engine.shutdown()
 
 
 def test_known_folders_resolve_to_real_paths():
