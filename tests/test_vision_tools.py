@@ -5,6 +5,7 @@ import pytest
 from PySide6.QtGui import QColor, QImage
 
 from wk import tool_registry, vision_tools
+from wk import popup
 
 
 class Eyes:
@@ -47,7 +48,7 @@ def test_image_inspection_uses_bounded_owner_file(tmp_path, monkeypatch):
 def test_private_screen_never_captures(monkeypatch):
     engine = _engine()
     monkeypatch.setattr(vision_tools.sensors, "foreground_window", lambda: ("app.exe", "private window"))
-    monkeypatch.setattr(vision_tools.popup, "_capture_at_pointer", lambda: pytest.fail("capture occurred"))
+    monkeypatch.setattr(popup, "_capture_at_pointer", lambda: pytest.fail("capture occurred"))
     with pytest.raises(PermissionError, match="private"):
         vision_tools.inspect_screen(engine, "What is on screen?")
 
@@ -56,7 +57,7 @@ def test_foreground_switch_drops_pixels_before_model(monkeypatch):
     engine = _engine()
     windows = iter([("app.exe", "public"), ("app.exe", "private window")])
     monkeypatch.setattr(vision_tools.sensors, "foreground_window", lambda: next(windows))
-    monkeypatch.setattr(vision_tools.popup, "_capture_at_pointer", lambda: b"pixels")
+    monkeypatch.setattr(popup, "_capture_at_pointer", lambda: b"pixels")
     with pytest.raises(RuntimeError, match="discarded"):
         vision_tools.inspect_screen(engine, "What is on screen?")
     assert not engine.eyes.calls

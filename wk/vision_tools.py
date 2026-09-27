@@ -5,7 +5,7 @@ import hashlib
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QImageReader
 
-from . import path_policy, popup, sensors, vision
+from . import path_policy, sensors, vision
 
 MAX_IMAGE_BYTES = 20_000_000
 MAX_IMAGE_PIXELS = 16_000_000
@@ -59,6 +59,7 @@ def inspect_image(engine, path: str, question: str) -> dict:
 
 def inspect_screen(engine, question: str) -> dict:
     """Inspect the pointer area only when the foreground window is not private."""
+    from . import popup  # popup imports brain; defer until brain has finished importing tool_registry
     before = sensors.foreground_window()
     if engine.is_private(*before):
         raise PermissionError("private foreground window; screen pixels were not captured")
