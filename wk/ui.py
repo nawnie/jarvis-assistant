@@ -359,7 +359,13 @@ class MainWindow(QMainWindow):
         self.store = engine.store
         self.setWindowTitle("Jarvis Assistant")
         self.setWindowIcon(make_icon(True))
-        self.resize(1120, 740)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.resize(min(1120, max(1, area.width() - 32)),
+                        min(740, max(1, area.height() - 32)))
+        else:
+            self.resize(1120, 740)
         self.setStyleSheet(build_style())
         # links in answers and journal entries in the HUD cyan (QSS can't reach QTextBrowser links)
         pal = self.palette()
