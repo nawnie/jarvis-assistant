@@ -1,7 +1,8 @@
 """Bounded, read-only facts Jarvis can tell Shawn about itself."""
 import urllib.error
+from pathlib import Path
 
-from . import config, delegate_tools
+from . import config, delegate_tools, review, tool_registry
 
 
 VISIBLE_SETTINGS = (
@@ -9,7 +10,7 @@ VISIBLE_SETTINGS = (
     "watch_folders", "watch_system", "poll_seconds", "idle_seconds",
     "folders", "excluded_processes", "excluded_title_words", "retention_days",
     "projects_enabled", "project_task_context", "llm_base_url", "llm_model",
-    "llm_autostart_server", "away_model_enabled", "remote_api_enabled",
+    "llm_enabled", "llm_autostart_server", "away_model_enabled", "task_focus_27b_enabled", "remote_api_enabled",
     "memory_fact_mode", "memory_fact_limit", "memory_capture_mode", "memory_open_loops", "memory_project_updates",
     "memory_journal_recall",
     "memory_activity_minutes", "memory_task_hours", "memory_clipboard_items",
@@ -31,6 +32,22 @@ def status_text(engine):
     links = delegate_tools.available()
     pending = len(engine.store.fact_candidates())
     model_status = _model_status(engine)
+    review_problem = review.review_readiness_problem(engine)
+    review_status = "ready with Jarvis-owned Bonsai 2 27B" if review_problem is None else f"not ready: {review_problem}"
+    guarded_review_status = ("available; per-run GPU preflight still applies"
+                             if review.sentinel_vram_guard() is not None
+                             and review.console_python() is not None
+                             and engine.cfg.get("away_model_alias") == "ternary-bonsai-2-27b"
+                             else "unavailable; Sentinel, console Python, or pinned 27B profile is missing")
+    route = getattr(engine, "last_route_receipt", None) or {}
+    route_status = (f"{route.get('tier', '?')} task on {route.get('chosen_profile', '?')} "
+                    f"({route.get('runtime_state', 'unverified')}); "
+                    f"effective context {route.get('effective_context', '?')}; "
+                    f"benchmark {route.get('benchmark_state', 'unknown')} "
+                    f"{route.get('benchmark_record_id') or ''}; "
+                    f"focus {route.get('focus_lease', 'none')}; "
+                    f"reason {route.get('reason', 'unknown')}"
+                    if route else "none yet")
     return (
         "Jarvis Assistant status:\n"
         f"- Source: {config.APP_DIR}\n"
@@ -38,10 +55,14 @@ def status_text(engine):
         f"- Local database: {config.DB_PATH}\n"
         f"- Watching: {'on' if engine.watching else 'paused'}\n"
         f"- Model chat: {model_status}\n"
+        f"- Last task route: {route_status}. Routing is heuristic until an exact benchmark receipt matches.\n"
+        f"- Read-only project review: {review_status}; no auto model swap or source edits. /learn may propose one quoted pending fact when enabled.\n"
+        f"- Explicit /review-once: {guarded_review_status}; one sanitized packet, temporary 27B server, "
+        "and no saved model preference changes.\n"
         f"- Memory suggestions waiting for Shawn: {pending}; none are recalled until kept.\n"
-        f"- Bonsai 8B consultations: {'enabled' if engine.cfg.get('tool_use_8b', False) else 'disabled'}; "
+        f"- Bonsai 8B optional CLI consultations: {'enabled' if engine.cfg.get('tool_use_8b', False) else 'disabled'}; "
         f"Claude CLI {'installed' if links['claude'] else 'missing'}, "
-        f"Codex CLI {'installed' if links['codex'] else 'missing'}. CLI tools and MCP servers are not passed through.\n"
+        f"Codex CLI {'installed' if links['codex'] else 'missing'}. CLI consultation does not pass through CLI tools or MCP credentials.\n"
         f"- Claude/Codex windows: {seen}\n"
         "- Window tracking reads visible title bars only. I cannot read chat text, "
         "unsent drafts, or background app contents through this sensor.\n"
@@ -49,9 +70,15 @@ def status_text(engine):
         "when on, recent user requests from local session files can inform chat with activity context "
         "and matching active projects while Watching is enabled. They are not stored in my database. "
         "Claude Desktop chat is not connected.\n"
-        "- Use /objectives for goals, /settings for non-secret settings, /tools for installed AI links, "
-        "and /processes for a read-only RAM snapshot. /stop requires Shawn's exact PID and identity. "
-        "I do not run arbitrary shell commands or edit my source or settings from chat."
+        "- Use /objectives for goals, /settings for non-secret settings, /tools for callable local tools and installed AI links, "
+        "and /processes for a read-only RAM snapshot. /stop requires Shawn's exact PID and identity.\n"
+        + ("- PC actions: ON. Available host tools include read, search, patch, bounded checks, list, find, move, copy, rename and "
+           "delete files (deletes go to the Recycle Bin), make folders, unzip, open files or programs, check "
+           "disk space. Arbitrary shell commands need a separate authorized host route."
+           if engine.cfg.get("pc_actions_enabled", True) else
+           "- PC actions: off in settings, so I can describe steps but not do them.")
+        + ("\n- Voice: ON. Shawn can say 'Hey Jarvis' and talk to me; I answer out loud (British voice), and "
+           "voice requests can do everything chat can." if engine.cfg.get("voice_enabled", True) else "")
     )
 
 
@@ -114,7 +141,7 @@ def files_text():
             lines.append(f"- {path} ({info.st_size} bytes)")
         except OSError:
             lines.append(f"- {path} (not present)")
-    lines.append("/settings shows current non-secret settings. Chat does not read arbitrary files.")
+    lines.append("/settings shows current non-secret settings. File reads require a tool call and an actual path.")
     return "\n".join(lines)
 
 
@@ -129,11 +156,34 @@ def handoff_text():
 
 def capability_text(engine):
     return (
-        status_text(engine) + "\n"
+        shared_wiki_instructions() + "\n\n" + status_text(engine) + "\n" +
+        tool_registry.describe(engine.cfg) + "\n"
         "A focused-window timeline and clipboard history are available only when "
         "Watching and their settings are enabled. Recent activity is supplied to chat "
         "only when its context option is enabled. Never claim to monitor conversation "
         "text, draft text, or a task's progress based solely on a window title. "
         "If asked to do something outside these capabilities, explain the missing access "
-        "and the specific setup needed; do not say it is already active."
+        "and the specific setup needed; do not say it is already active. The /review command can review only "
+        "one sanitized JSON packet from the dedicated review_packets folder, and only when Jarvis's own "
+        "Bonsai 2 27B is already loaded. The explicit /review-once command can start one temporary 27B "
+        "server through Sentinel Jarvis when its installed VRAM guard is available; it requires a safe "
+        "GPU preflight, leaves saved model preferences unchanged, and stops its owned process afterward. "
+        "The user-triggered /advisory-preview file.json command reads one bounded selection packet "
+        "from Jarvis data/advisory_selections, shows exact selected retained Jarvis turns and/or "
+        "user-supplied transcript excerpts, and never calls Kairo. Kairo advice remains disabled "
+        "under the current CAP-01 authority. "
+        "Neither review route edits source. The /learn command can "
+        "consider only the packet's purpose field, and may propose one verbatim quote as a pending memory "
+        "candidate when memory suggestions are enabled and the same 27B profile is already loaded. It "
+        "does not learn from assistant output or activate a fact without Shawn's approval."
     )
+
+
+def shared_wiki_instructions():
+    """Read Shawn's local project-wiki directive on every prompt construction."""
+    path = Path(r"F:\RAG\AES Wiki\HARNESS_INSTRUCTIONS.md")
+    try:
+        return path.read_text(encoding="utf-8")[:4_000].strip()
+    except OSError:
+        return ("Shared project wiki instructions are unavailable at F:\\RAG\\AES Wiki. "
+                "Report that gap; do not invent wiki context or handoff evidence.")

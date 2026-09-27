@@ -25,12 +25,17 @@ import psutil
 
 from . import sensors
 
+# Bonsai 2 27B's vision tower (the Qwen3.8-27B projector, 600 MB; the same file llama chat uses from
+# F:\Ai_Models\Chat Models\vision-projectors - they are hardlinks). Loaded with the 27B only.
+BIG_MODEL_MMPROJ = (r"F:\Ai_Models\Language Models\AIWF LLM\GGUF\Ternary-Bonsai-2-27B"
+                    r"\Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf")
+
 
 # ---------------------------------------------------------------------------
 # Structured answers: the model must reply with JSON matching a schema.
 # llama-server turns the schema into a grammar, so the reply always parses.
 # ---------------------------------------------------------------------------
-def chat_json(llm, messages, schema, max_tokens=1200, temperature=0.3):
+def chat_json(llm, messages, schema, max_tokens=1200, temperature=0.3, timeout=600):
     body = {
         "model": llm.model(),
         "messages": messages,
@@ -42,7 +47,7 @@ def chat_json(llm, messages, schema, max_tokens=1200, temperature=0.3):
     try:
         req = urllib.request.Request(llm.cfg["llm_base_url"].rstrip("/") + "/chat/completions",
                                      data=json.dumps(body).encode("utf-8"), headers=llm._headers())
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             msg = json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]
     except Exception as exc:
         raise llm._clean_error(exc) from None
@@ -64,16 +69,23 @@ class ModelManager:
         self.lock = threading.Lock()
         self.active = "small"
         self.busy = False
+        self.reviewing = False
+        self.task_focus = False
         self._small_gpu_clear_since = None
         self._small_retry_after = 0.0
         self._small_notice_after = 0.0
         self._big_gpu_clear_since = None
+        self.pending_profile = None
+        self._pending_retry_after = 0.0
 
     # --- what each profile runs -------------------------------------------------
     def profile(self, name):
         if name == "big":
+            # the 27B loads WITH its vision tower (the 600 MB Qwen3.8-27B projector) so Ctrl+Shift+click can
+            # look at the screen; the 8B is text-only (Qwen3-8B base) and no projector exists for it
             return {"file": self.cfg["away_model_file"], "alias": self.cfg["away_model_alias"],
-                    "ctx": self.cfg["away_model_ctx"], "label": "Bonsai 2 27B"}
+                    "ctx": self.cfg["away_model_ctx"], "label": "Bonsai 2 27B",
+                    "mmproj": self.cfg.get("away_model_mmproj_file", BIG_MODEL_MMPROJ)}
         return {"file": self.cfg["llm_model_file"], "alias": self.cfg["llm_model"],
                 "ctx": self.cfg["llm_ctx"], "label": "Bonsai 8B"}
 
@@ -83,7 +95,14 @@ class ModelManager:
     def describe(self):
         if self.busy:
             return "switching model..."
-        return self.profile(self.active)["label"] + (" (away mode)" if self.active == "big" else "")
+        if self.pending_profile:
+            return "waiting for GPU to load " + self.profile(self.pending_profile)["label"]
+        if self.reviewing:
+            return self.profile(self.active)["label"] + " (read-only review)"
+        if self.active == "big":
+            # a 27B Shawn loaded himself isn't "away mode"; say it can see instead
+            return "Bonsai 2 27B" + (" · vision" if self.cfg.get("llm_pinned_profile") == "big" else " (away mode)")
+        return self.profile(self.active)["label"]
 
     def _port(self):
         return urlparse(self.cfg["llm_base_url"]).port or 8084
@@ -132,6 +151,115 @@ class ModelManager:
         except Exception:
             return ""
 
+    def profile_load_problem(self, name):
+        """Return a bounded reason if the requested profile is not verifiably ready."""
+        if self.busy:
+            return "Jarvis is switching models"
+        if self.reviewing:
+            return "another read-only review is in progress"
+        if self.active != name:
+            return f"{self.profile(name)['label']} is not the active Jarvis model"
+        try:
+            endpoint = urlparse(self.cfg["llm_base_url"])
+            if endpoint.scheme != "http":
+                return "the configured model endpoint scheme must be http"
+            if endpoint.hostname != "127.0.0.1":
+                return "the configured model endpoint host must be 127.0.0.1"
+            try:
+                endpoint.port
+            except ValueError:
+                return "the configured model endpoint port is invalid"
+            if endpoint.path.rstrip("/") != "/v1":
+                return "the configured model endpoint path must be /v1"
+            if endpoint.username or endpoint.password:
+                return "the configured model endpoint must not contain credentials"
+            if endpoint.query:
+                return "the configured model endpoint must not contain query parameters"
+            if endpoint.fragment:
+                return "the configured model endpoint must not contain a fragment"
+        except (ValueError, KeyError, TypeError):
+            return "the configured model endpoint is invalid"
+        proc = self._owned_process()
+        if not proc:
+            return ("the model port is occupied by a service Jarvis did not launch" if self._port_in_use()
+                    else "Jarvis has not launched its model server")
+        if not self._health():
+            return "Jarvis's owned model server failed its loopback health check"
+        try:
+            command = proc.cmdline()
+            if "--host" not in command or command[command.index("--host") + 1:command.index("--host") + 2] != ["127.0.0.1"]:
+                return "Jarvis's recorded model server is not bound to 127.0.0.1"
+            for flag, expected in (("-c", self.profile(name)["ctx"]),
+                                   ("-ctk", "q8_0"), ("-ctv", "q8_0"),
+                                   ("-b", self.cfg.get("llm_batch", 2048)),
+                                   ("-ub", self.cfg.get("llm_ubatch", 512))):
+                if flag not in command or command[command.index(flag) + 1:command.index(flag) + 2] != [str(expected)]:
+                    return f"Jarvis's recorded model server has a different {flag} setting"
+            owner = json.loads(self.owner_path.read_text(encoding="utf-8"))
+            profile = self.profile(name)
+            projector = profile.get("mmproj")
+            if projector and not Path(projector).is_file():
+                return "the configured vision projector is missing"
+            if projector:
+                if ("--mmproj" not in command or
+                        command[command.index("--mmproj") + 1:command.index("--mmproj") + 2] != [projector]):
+                    return "Jarvis's recorded model server lacks the configured vision projector"
+            expected_exe = str(Path(self.cfg["llm_server_exe"]).resolve())
+            if Path(owner["exe"]).resolve() != Path(expected_exe).resolve():
+                return "Jarvis's recorded process uses a different model-server executable"
+            if Path(owner["model"]).resolve() != Path(profile["file"]).resolve():
+                return "Jarvis's recorded process uses a different model file"
+            alias = self.loaded_alias()
+            if not alias:
+                return "Jarvis's owned server has not reported a loaded model"
+            if alias != profile["alias"]:
+                return f"Jarvis's owned server reports '{alias}', not {profile['label']}"
+        except (OSError, ValueError, KeyError, TypeError):
+            return "Jarvis could not verify its model-server identity"
+        return None
+
+    def is_profile_loaded(self, name):
+        """Confirm this exact configured model is served by Jarvis's recorded process."""
+        return self.profile_load_problem(name) is None
+
+    def begin_review(self, profile="big"):
+        """Reserve one currently loaded, Jarvis-owned profile for a read-only review."""
+        with self.lock:
+            if profile not in {"big", "small"} or self.busy or self.reviewing or self.active != profile:
+                return False
+            if self.profile_load_problem(profile) is not None:
+                return False
+            self.reviewing = True
+            return True
+
+    def end_review(self):
+        with self.lock:
+            self.reviewing = False
+
+    def begin_task_focus(self):
+        """Opt-in 27B lease; only the existing owner-checked switch may load it."""
+        if not self.cfg.get("task_focus_27b_enabled", False) or not model_control_allowed():
+            return False
+        with self.lock:
+            if self.task_focus or self.reviewing or self.busy:
+                return False
+            self.task_focus = True
+        if self.profile_load_problem("big") is None:
+            return True
+        self.switch("big")
+        if self.profile_load_problem("big") is None:
+            return True
+        with self.lock:
+            self.task_focus = False
+        return False
+
+    def end_task_focus(self, restore_small=False):
+        with self.lock:
+            held = self.task_focus
+            self.task_focus = False
+        if held and restore_small and self.cfg.get("llm_pinned_profile") != "big":
+            self.switch_async("small")
+
     def _stop_ours(self):
         proc = self._owned_process()
         if proc:
@@ -166,7 +294,11 @@ class ModelManager:
             return False
         args = [self.cfg["llm_server_exe"], "-m", p["file"], "--host", "127.0.0.1", "--port", str(self._port()),
                 "-c", str(p["ctx"]), "-ngl", str(self.cfg.get("llm_gpu_layers", 999)), "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
-                "--parallel", "1", "--reasoning", "off", "--alias", p["alias"]]
+                "-b", str(self.cfg.get("llm_batch", 2048)), "-ub", str(self.cfg.get("llm_ubatch", 512)),
+                "--parallel", "1", "--reasoning", "off", "--alias", p["alias"],
+                "--cors-origins", "localhost", "--no-cors-credentials"]
+        if p.get("mmproj") and Path(p["mmproj"]).exists():
+            args += ["--mmproj", p["mmproj"]]      # the 27B's eyes: lets explain clicks send screenshots
         # the server keeps its own copy of the log handle; ours is closed as soon as it has started
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         if detached:
@@ -231,9 +363,21 @@ class ModelManager:
         return True, f"GPU stayed below {max_util:.0f}% utilization with at least {need:.0f} MiB free"
 
     def maybe_start_small_async(self):
-        """Retry a deferred small-model start as the host becomes idle; never evict another server."""
-        if (not self.cfg.get("llm_autostart_server") or not model_control_allowed()
-                or self.active == "big" or self.our_server_pids() or self._port_in_use()):
+        """Retry an explicit deferred profile or configured small-model autostart."""
+        if not self.cfg.get("llm_enabled", True) or not model_control_allowed():
+            return
+        if self.pending_profile:
+            if time.monotonic() < self._pending_retry_after:
+                return
+            if self.busy or self.reviewing:
+                return
+            want = self.pending_profile
+            self._pending_retry_after = time.monotonic() + (60 if want == "big" else 15)
+            threading.Thread(target=self.switch, args=(want,), daemon=True,
+                             name=f"jarvis-model-retry-{want}").start()
+            return
+        if (not self.cfg.get("llm_autostart_server") or self.active == "big"
+                or self.our_server_pids() or self._port_in_use()):
             return
         now = time.monotonic()
         if now < self._small_retry_after:
@@ -243,10 +387,10 @@ class ModelManager:
                          name="jarvis-small-model-retry").start()
 
     def _start_small_if_needed(self):
-        if not self.cfg.get("llm_autostart_server") or not model_control_allowed():
+        if not self.cfg.get("llm_enabled", True) or not self.cfg.get("llm_autostart_server") or not model_control_allowed():
             return
         with self.lock:
-            if self.busy or self.our_server_pids() or self.active == "big":
+            if self.busy or self.reviewing or self.our_server_pids() or self.active == "big":
                 return
             self.busy = True
         try:
@@ -262,7 +406,8 @@ class ModelManager:
     def _comfyui_idle_unload(self):
         """Ask ComfyUI to unload its models - only if its queue is empty (never interrupts a job)."""
         base = (self.cfg.get("comfyui_url") or "").rstrip("/")
-        if not base or not self.cfg.get("away_free_comfyui") or not model_control_allowed():
+        if (base != "http://127.0.0.1:8188" or not self.cfg.get("away_free_comfyui")
+                or not model_control_allowed()):
             return False
         try:
             with urllib.request.urlopen(base + "/queue", timeout=3) as resp:
@@ -319,6 +464,8 @@ class ModelManager:
             alias = self.loaded_alias() if self.our_server_pids() else ""
             self.active = "big" if alias and alias == self.cfg["away_model_alias"] else "small"
             return
+        if not self.cfg.get("llm_enabled", True):
+            return
         if self._port_in_use() and not self.our_server_pids():
             self.on_event(f"Jarvis model port {self._port()} belongs to another service; model control is paused")
             return
@@ -332,37 +479,77 @@ class ModelManager:
         if self.cfg.get("llm_autostart_server"):
             self._start_small_if_needed()
 
-    def switch(self, want):
-        if not model_control_allowed():
+    def switch(self, want, manual=False):
+        """manual=True: Shawn pressed 8B / 27B himself, so the event log says so (not 'away mode')."""
+        if want not in {"small", "big"} or not model_control_allowed() or not self.cfg.get("llm_enabled", True):
             return
         with self.lock:
-            if self.busy or want == self.active:
+            if self.busy or self.reviewing or (self.task_focus and want == "small"):
+                return
+            if want == self.active and self.is_profile_loaded(want):
+                self.pending_profile = None
                 return
             self.busy = True
+            self.pending_profile = want
         try:
             if self._port_in_use() and not self.our_server_pids():
+                self.pending_profile = None
                 self.on_event(f"Jarvis model port {self._port()} belongs to another service; model switch deferred")
                 return
             if want == "big" and not self.room_for_big():
+                self._pending_retry_after = max(self._pending_retry_after, time.monotonic() + 60)
                 return
             self._stop_ours()
             if self._start(want):
                 self.active = want
-                self.on_event("Switched to Bonsai 2 27B for away-mode work" if want == "big"
-                              else "Welcome back - switched to Bonsai 8B")
+                self.pending_profile = None
+                if manual:
+                    self.on_event("Loaded Bonsai 2 27B (with vision) - it stays until you pick 8B" if want == "big"
+                                  else "Loaded Bonsai 8B")
+                else:
+                    self.on_event("Switched to Bonsai 2 27B for away-mode work" if want == "big"
+                                  else "Welcome back - switched to Bonsai 8B")
             else:
                 if want == "big":
                     self._stop_ours()
                     restored = self._start("small")
                     self.active = "small"
+                    self.pending_profile = None
                     self.on_event("Couldn't load Bonsai 2; returned to Bonsai 8B" if restored else
                                   "Couldn't load Bonsai 2; Bonsai 8B is waiting for safe GPU capacity")
                 else:
                     self.active = "small"
                     self._small_retry_after = max(self._small_retry_after, time.monotonic() + 60)
+                    if not Path(self.cfg["llm_server_exe"]).exists() or not Path(self.profile("small")["file"]).exists():
+                        self.pending_profile = None
                     self.on_event("Bonsai 8B is not loaded; Jarvis will retry when the GPU is clear")
         finally:
             self.busy = False
 
-    def switch_async(self, want):
-        threading.Thread(target=self.switch, args=(want,), daemon=True, name=f"jarvis-model-{want}").start()
+    def switch_async(self, want, manual=False):
+        threading.Thread(target=self.switch, args=(want,), kwargs={"manual": manual}, daemon=True,
+                         name=f"jarvis-model-{want}").start()
+
+    def stop(self):
+        """Take Jarvis offline by stopping only its verified, recorded model server."""
+        if not model_control_allowed():
+            return
+        with self.lock:
+            if self.busy or self.reviewing:
+                self.on_event("Jarvis model could not go offline while a model operation is active")
+                return
+            self.busy = True
+        try:
+            self.pending_profile = None
+            if self.our_server_pids():
+                self._stop_ours()
+                self.on_event("Jarvis's model is offline")
+            elif self._port_in_use():
+                self.on_event("Jarvis did not stop the service on its model port because Jarvis did not launch it")
+            else:
+                self.on_event("Jarvis's model is already offline")
+        finally:
+            self.busy = False
+
+    def stop_async(self):
+        threading.Thread(target=self.stop, daemon=True, name="jarvis-model-offline").start()

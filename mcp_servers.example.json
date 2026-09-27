@@ -1,0 +1,10 @@
+{
+  "mcp_servers": {
+    "comfy-local": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:REPLACE_WITH_VERIFIED_PORT/mcp",
+      "allowed_tools": ["server_info", "validate_workflow", "run_workflow", "job", "fetch_outputs"]
+    }
+  }
+}

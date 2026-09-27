@@ -1,0 +1,4 @@
+# Optional MCP client feature, tested against the local development runtime.
+# Install into Jarvis's own isolated environment after its dependency review.
+mcp==1.28.1
+jsonschema==4.26.0

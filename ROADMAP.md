@@ -1,40 +1,27 @@
-# Jarvis Assistant MVP Roadmap
+# Jarvis Assistant release gates
 
-**Last reviewed:** 2026-09-25
+**Last reviewed:** 2026-09-27. This is source-available software under the repository's noncommercial license. The current implementation has meaningful local tests, but a clean installation and all user-visible workflows have not been accepted.
 
-**Status:** MVP hardening in progress. The Windows app, setup guide, and deterministic checks are present. End-to-end model-backed operation on a clean user installation has not been demonstrated.
+## Evidence at this checkpoint
 
-## Current checkpoint
-
-- `/status` now probes the configured local model endpoint and reports a credential-free failure reason. Its output includes local source, settings, and database paths; redact it before sharing. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
-- During the 2026-09-24 review, Jarvis's configured local model endpoint had no server listening. Model-backed chat through the Jarvis app therefore remains unverified.
-- A text-only Bonsai 2 27B CLI review ran separately under the local VRAM guard. It reviewed supplied release-readiness notes; it did not run inside Jarvis, change model weights, or add memory to Jarvis.
-- `ModelManager._start()` keeps its detached tray-launch default and adds an opt-in `detached=False` mode for guarded callers. A regression test checks that attached mode omits `DETACHED_PROCESS`; this is process-launch coverage, not Jarvis UI or user-install acceptance.
-- GitHub Actions run [36084658502](https://github.com/nawnie/jarvis-assistant/actions/runs/36084658502) passed on commit `c907dac`, the draft PR head at that time, including dependency installation, `pyflakes`, and the isolated core-test suite. It does not prove live model inference or a clean user-profile install.
-
-## Release milestones
-
-| Milestone | Acceptance evidence | State |
+| Capability | What was observed | Limit |
 |---|---|---|
-| Reliable offline behavior | Safe sample config; app starts without monitoring or model autostart; status explains endpoint failures without disclosing credentials | Code and isolated checks; restart/live check pending |
-| First-run Windows acceptance | Follow setup from a fresh Windows user profile, configure data and model paths, start and stop cleanly, and verify recovery after endpoint loss and return | Not demonstrated |
-| Conversation MVP | Exercise chat, memory suggestions, explicit KEEP review, and one bounded project objective against the intended local model; retain the test scope and receipt | Not demonstrated through Jarvis's model endpoint |
-| 27B away-work review | Show the configured model fits available VRAM with guard headroom, produces a useful review, and unloads cleanly; keep any file changes proposal-only until user approval | Attached launch support and flag regression test added; Jarvis UI acceptance and a production self-repair flow remain open |
-| User release package | Document install, upgrade, backup, recovery, data location, supported Windows/Python versions, and known limitations; validate on a clean machine | Not demonstrated |
-| Commercial release decision | Obtain separate project-owner license permission and qualified legal review before commercial use | Open; current license is noncommercial |
+| Windows source and offline checks | The installed desktop and phone source matched the reviewed 108/170-file source manifest. Independent frozen desktop tests passed 306 with one absent-private-fixture skip; live desktop tests passed 307. | These are source/test results, not first-run or native-screen acceptance. |
+| Local Bonsai chat and tools | The configured 8B and 27B profiles loaded under guarded, owner-controlled trials and issued native tool calls. Both selected a phone-folder tool against a fictional ADB adapter. | The fake adapter never read a physical device. Neither profile has been shown to complete arbitrary autonomous project work. |
+| File and project tools | Synthetic tests exercised selected read/write roots, protected-path denial for reads and writes, exact-span patching, registered project tests, and lost-response project lookup. Missing private policy fails closed. | Ordinary Windows process permissions still apply. The registered test runner is not a filesystem sandbox. The current local policy writes only within a dedicated Jarvis workspace. |
+| MCP | An allowlisted local stdio server worked with the pinned optional MCP client; discovery, schema checks, repeated calls, and cleanup were tested. | External services and their workflows need separate configuration and acceptance. |
+| Vision | 8B plus a compact local eyes service read a synthetic `A7` image. | Direct 27B vision answered `AF` twice for that exact image. General image understanding has not been benchmarked. |
+| ComfyUI | A synthetic no-model LoadImage→SaveImage workflow completed against an owner-started local service. | No image-generation model or GPU-fit result was accepted. |
+| Phone operator console | The companion's signed synthetic emulator fixture displayed a fictional assignment and a desktop project receipt; live source and offline Android build checks passed. | The physical phone, real PC task completion, and third-party AI task acceptance were not demonstrated. |
+| Visual media | Qt-rendered synthetic Now, Chat, Memory, and Settings views were inspected. | Native Windows screen capture and accessibility interaction checks remain open. A synthetic page tour is not a model/task demo. |
 
-## Safe learning boundary
+## Before a broader release
 
-Jarvis can use selected activity and recent local Codex or Claude Code request hints only when the matching settings and Watching are enabled. Observations are bounded context, not proof that a project task completed. Durable memory suggestions require review. Observed tasks do not become independent objectives automatically. The planned 27B self-repair path must remain proposal-only, show its evidence and diff, and require explicit approval before applying changes.
+1. Replace or explicitly review original-machine path defaults and protected-project labels before publishing a portable source projection. Keep the host-side privacy denials and owner-controlled test registry effective.
+2. Walk through installation, configuration, app launch, endpoint loss/recovery, memory review, and a bounded project task on a fresh Windows profile. Preserve exact receipts and test data.
+3. Resolve direct 27B vision on a fixed image fixture or document it as unsupported. Test a safe Comfy image-generation workflow only when GPU ownership and model fit are established.
+4. Validate phone pairing and a bounded action on the intended physical device separately. Keep messages as drafts with final Android send confirmation, and keep risky settings behind owner confirmation.
+5. Capture an unobstructed native Windows UI flow and accessibility checks. Publish only synthetic or fully inspected, cropped media with captions that describe exactly what the capture proves.
+6. Keep model weights, local histories, credentials, device identifiers, and runtime databases out of this repository. Test backup and recovery from an allowlisted non-model archive.
 
-## Badges and accreditation
-
-The README badges describe the GitHub Actions workflow, platform, Python/UI stack, model links, and current license. They are not certification marks. No third-party certification or accreditation evidence is documented in the reviewed repository, and none is claimed here.
-
-## Next work
-
-1. Activate the `/status` change through a controlled Jarvis restart and verify the live response while the model endpoint is unavailable.
-2. Recheck endpoint recovery and a real chat turn when the intended model service can be run within the owner's VRAM constraints.
-3. Complete the fresh-profile install, backup/recovery, and bounded project-objective walkthrough.
-4. Add release packaging and a user-facing upgrade path after the acceptance steps above are repeatable.
-5. Keep commercial distribution gated on written license permission and legal review; do not infer permission from repository visibility or CI badges.
+The repository badges describe technology and workflow status, not accreditation. Commercial use remains subject to the [PolyForm Noncommercial license](LICENSE) and separate permission from the project owner.

@@ -10,23 +10,29 @@ Layout: a sidebar of pages on the left, one page shown at a time.
   Chat       - talk to the model, with live activity as context
   Recall     - search everything Jarvis has seen, or ask a question about it
   Projects   - work you give Jarvis to do on its own while you're away
+  GPU        - who is on the graphics card, what each AI server has loaded (wk/feature_pages.py)
+  Actions    - one-click quick actions, also usable from the ask bar and chat
+  Games      - game fixing, spoiler-safe hints, and the autoplay lab
   Settings   - what to watch, thresholds, model, start with Windows
 """
 import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QAbstractSpinBox, QDialog, QDialogButtonBox, QFileDialog, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter,
-    QStackedWidget,
+    QStackedWidget, QApplication,
     QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
-from . import config, hud, popup, sensors
+from . import captions, config, crash_doctor, feature_pages, hud, media, pc_tools, phone_alerts, pointer, popup, semantic, sensors, task_blueprint, vision, voice, voice_actor
+from . import hotkeys
+from .models import model_control_allowed
 from .brain import SYSTEM_PERSONA, Engine, run_async
 
 # ---------------------------------------------------------------------------
@@ -341,6 +347,12 @@ def llm_error(result):
 # Main window
 # ===========================================================================
 class MainWindow(QMainWindow):
+    crash_found = Signal(dict)       # a new crash/hang/GPU reset from the Windows logs (wk/crash_doctor.py)
+    download_found = Signal(str)     # a new archive landed in a watched folder (offer to unzip it)
+    voice_event = Signal(str, str)   # (kind, text) from the voice thread, delivered on the GUI thread
+    act_hotkey = Signal(str)         # Ctrl+Alt+V / Ctrl+Alt+Shift+V (hotkey thread -> GUI thread)
+    actor_event = Signal(str, str)   # (kind, text) from the voice-acting thread
+    caption_event = Signal(str, str) # (kind, text) from the speaker-loopback thread
     def __init__(self, engine: Engine):
         super().__init__()
         self.engine = engine
@@ -369,6 +381,10 @@ class MainWindow(QMainWindow):
                     ("Clipboard", self._build_clipboard), ("Reminders", self._build_reminders),
                     ("Journal", self._build_journal), ("Memory", self._build_memory),
                     ("Chat", self._build_chat), ("Recall", self._build_recall), ("Projects", self._build_projects),
+                    # the newer feature pages live in wk/feature_pages.py (GPU traffic, quick actions, games)
+                    ("GPU", lambda: feature_pages.build_gpu_page(self)),
+                    ("Actions", lambda: feature_pages.build_actions_page(self)),
+                    ("Games", lambda: feature_pages.build_games_page(self)),
                     ("Settings", self._build_settings)]
         for name, build in builders:
             self.nav.addItem(QListWidgetItem(name))
@@ -387,11 +403,75 @@ class MainWindow(QMainWindow):
             hud.caps(button, 1.1)
         hud.style_titlebar(self)          # Windows 11: the title bar itself goes HUD navy + cyan
 
-        # the floating info card: Ctrl+click anywhere, or click an app in Today / Timeline
+        # Jarvis's eyes (wk/vision.py): with Bonsai 2 27B loaded, explain clicks let the 27B look
+        # itself; with Bonsai 8B, the small Qwen2.5-VL 3B eyes load on demand. Checked every minute
+        # so the Qwen eyes hand their VRAM back (unused / a game needs it / the 27B was loaded), and
+        # stopped when Jarvis quits. Never more than two models at once.
+        self.eyes = vision.Eyes(engine)
+        self._eyes_timer = QTimer(self, interval=60_000,
+                                  timeout=lambda: run_async(self.eyes.unload_if_idle, self._eyes_unloaded))
+        self._eyes_timer.start()
+        QApplication.instance().aboutToQuit.connect(self.eyes.stop)
+
+        # the floating info card: Ctrl+Shift+click anywhere, or click an app in Today / Timeline
         self.card = popup.InfoCard()
         self.card.visibility_changed.connect(lambda shown: setattr(engine, "card_open", shown))
         self.card.continue_in_chat.connect(self._card_to_chat)
-        self.askbar = popup.AskBar(engine, self.card)
+        self.askbar = popup.AskBar(engine, self.card, eyes=self.eyes)   # quick-ask can look at the screen too
+
+        # the crash doctor: once a minute, new crashes / hangs / GPU driver resets from the Windows logs.
+        # The first check only learns what's already there (old crashes aren't announced).
+        self.doctor = crash_doctor.CrashDoctor()
+        self._doctor_timer = QTimer(self, interval=60_000,
+                                    timeout=lambda: run_async(self.doctor.poll, self._crashes_found))
+        self._doctor_timer.start()
+        run_async(self.doctor.poll, self._crashes_found)
+        # the download helper: the engine hands every new file in a watched folder to this hook
+        engine.file_hook = self._new_file_seen
+
+        # voice (wk/voice.py): "Hey Jarvis" -> your request -> the normal chat answer, spoken aloud.
+        # It runs on its own threads and reports back through voice_event (queued onto this thread).
+        # QA copies of Jarvis (JARVIS_NO_MODEL_CONTROL) never open the microphone.
+        self.voice = voice.Voice(lambda: self.engine.cfg, lambda text: self.engine.chat_reply(text, True),
+                                 self.voice_event.emit)
+        self.voice_event.connect(self._on_voice_event)
+        self._voice_request = None
+        self.card.visibility_changed.connect(self._card_closed_stop_speaking)
+        QApplication.instance().aboutToQuit.connect(self.voice.stop)
+        if engine.cfg.get("voice_enabled", True) and model_control_allowed():
+            QTimer.singleShot(3000, self.voice.start)          # after the window is up
+
+        # smart Recall (wk/semantic.py): meaning search over everything Jarvis has seen. The index is
+        # topped up every 10 minutes on the CPU; the embedding server stops itself after 10 idle minutes.
+        self.recall = semantic.SmartRecall(self.store, lambda: self.engine.cfg.get("llm_server_exe", ""))
+        self._recall_timer = QTimer(self, interval=600_000, timeout=self._refresh_recall_index)
+        if engine.cfg.get("recall_semantic", True) and model_control_allowed():
+            self._recall_timer.start()
+            QTimer.singleShot(90_000, self._refresh_recall_index)
+        QApplication.instance().aboutToQuit.connect(self.recall.server.stop)
+
+        # voice acting (wk/voice_actor.py): gives the game in front a voice cast, read from its dialogue box.
+        # Ctrl+Alt+V toggles it for the focused game (the first time, you draw the box); Ctrl+Alt+Shift+V redraws it.
+        self._actor_speaker = None
+        self.actor = voice_actor.VoiceActor(self._acting_speaker, self.actor_event.emit,
+                                           gender_fn=lambda name, game: voice_actor.guess_gender(self.engine.llm, name, game))
+        self.actor_event.connect(self._on_actor_event)
+        self.act_hotkey.connect(lambda which: self.toggle_voice_acting(repick=(which == "repick")))
+        self._picker = None
+        self._last_app = ""
+        QApplication.instance().aboutToQuit.connect(self.actor.stop)
+        # Captions listen to speaker output only after Shawn turns them on.
+        self.captions = captions.LiveCaptions(lambda line: self.caption_event.emit("line", line),
+                                             lambda error: self.caption_event.emit("error", error))
+        self.caption_event.connect(self._on_caption_event)
+        self.caption_overlay = None
+        QApplication.instance().aboutToQuit.connect(self.captions.stop)
+        if engine.cfg.get("quick_ask_hotkey", True):          # test copies switch this off: no global keys
+            self._act_keys = hotkeys.HotkeyThread(
+                {engine.cfg.get("voice_act_hotkey", "ctrl+alt+v"): lambda: self.act_hotkey.emit("toggle"),
+                 engine.cfg.get("voice_act_box_hotkey", "ctrl+alt+shift+v"): lambda: self.act_hotkey.emit("repick")},
+                on_error=lambda text: self.voice_event.emit("error", text))
+            self._act_keys.start()
         engine.hotkey_pressed.connect(self._quick_ask)   # emitted on the input thread -> bound slot
         # explain_requested is emitted on the mouse-hook thread; connecting it to a bound method of this
         # window (not a lambda) makes Qt queue the call onto the GUI thread, and frees the hook instantly
@@ -437,13 +517,137 @@ class MainWindow(QMainWindow):
         self.nav.setMouseTracking(True)
         self.nav.viewport().setAttribute(Qt.WA_Hover)
         self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav.setResizeMode(QListWidget.Adjust)     # re-fit the rows whenever the window is resized
         v.addWidget(self.nav, 1)
         v.addWidget(hud.ClockReadout())
         return side
 
     def _model_busy(self):
-        """True while the local model is answering anything (chat, a card, a journal entry...)."""
-        return getattr(self.engine.llm, "inflight", 0) > 0
+        """True while Jarvis is working on anything (chat, a card, a picture, listening or speaking)."""
+        eyes = getattr(self, "eyes", None)
+        speaking = getattr(self, "voice", None) is not None and self.voice.state in ("listening", "thinking", "speaking")
+        return getattr(self.engine.llm, "inflight", 0) > 0 or bool(eyes and eyes.busy()) or speaking
+
+    # -----------------------------------------------------------------------
+    # Voice: what the listener reports, shown on the floating card
+    # -----------------------------------------------------------------------
+    def _on_voice_event(self, kind, text):
+        if kind == "wake":
+            self._voice_request = self.card.open("Listening...", "Say your request", "")
+            self.card.set_tag(self._voice_request, "JARVIS // VOICE")
+            self.card.set_thinking_label(self._voice_request, "Listening")
+        elif kind == "heard" and self._voice_request:
+            self.card.set_facts(self._voice_request, title=text, subtitle="You said")
+            self.card.set_thinking_label(self._voice_request, "Thinking")
+        elif kind == "answer" and self._voice_request:
+            self.card.set_answer(self._voice_request, text)
+            self._render_chat()
+        elif kind == "nothing" and self._voice_request and self.card.request_id == self._voice_request:
+            self.card.hide()
+        elif kind == "ready":
+            self.store.add_event("voice", f'Listening for "Hey Jarvis" on {text}')
+            self._refresh_events()
+        elif kind == "error":
+            self.store.add_event("voice", text)
+            self._refresh_events()
+            self.engine.notify.emit("Voice", text[:240])
+
+    def _card_closed_stop_speaking(self, shown):
+        # closing the card (x, Esc or a click elsewhere) while Jarvis is talking stops the speech
+        if not shown and getattr(self, "voice", None) is not None and self.voice.state == "speaking" \
+                and self.voice.speaker is not None:
+            self.voice.speaker.stop()
+
+    # -----------------------------------------------------------------------
+    # Voice acting
+    # -----------------------------------------------------------------------
+    def _acting_speaker(self):
+        if self._actor_speaker is None:
+            self._actor_speaker = voice.Speaker()
+        return self._actor_speaker
+
+    def toggle_voice_acting(self, repick=False, process=None):
+        """Start/stop voice acting for the focused game; draws the dialogue box first when needed."""
+        if self.actor.running() and not repick:
+            self.actor.stop()
+            return
+        process = process or sensors.foreground_window()[0]
+        if process in ("explorer.exe", "pythonw.exe", "python.exe", "", None):
+            process = self._last_app
+        if not process:
+            self.engine.notify.emit("Voice acting", "Click into the game first, then press Ctrl+Alt+V.")
+            return
+        setup = voice_actor.load_setup()
+        if repick or not setup.get(process, {}).get("region"):
+            def done(region):
+                self._picker = None
+                if region is None:
+                    return
+                data = voice_actor.load_setup()
+                data.setdefault(process, {})["region"] = region
+                voice_actor.save_setup(data)
+                self.actor.start(process)
+            self._picker = voice_actor.pick_region(done)
+            return
+        self.actor.start(process)
+
+    def _on_actor_event(self, kind, text):
+        if kind == "started":
+            self.store.add_event("voice", f"Voice acting started for {text} (Ctrl+Alt+V stops it)")
+            self.engine.notify.emit("Voice acting on", f"{text}: reading its dialogue aloud. Ctrl+Alt+V to stop.")
+        elif kind == "stopped":
+            self.store.add_event("voice", f"Voice acting stopped for {text}")
+        elif kind == "line":
+            self.store.add_event("voice", text[:200])
+        self._refresh_events()
+
+    def toggle_captions(self):
+        """Show or stop English captions for the default speaker's audio."""
+        if self.captions.running():
+            self.captions.stop()
+            if self.caption_overlay:
+                self.caption_overlay.hide()
+            return
+        if self.caption_overlay is None:
+            self.caption_overlay = QLabel("Listening to this PC's audio…", None,
+                                          Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool |
+                                          Qt.WindowTransparentForInput)
+            self.caption_overlay.setAlignment(Qt.AlignCenter)
+            self.caption_overlay.setWordWrap(True)
+            self.caption_overlay.setStyleSheet("color: #e8faff; background: #071521; border: 1px solid #42dfff;"
+                                               "padding: 10px; font: 16pt 'Segoe UI';")
+            screen = QApplication.primaryScreen().availableGeometry()
+            self.caption_overlay.setGeometry(screen.x() + (screen.width() - 900) // 2,
+                                             screen.bottom() - 150, 900, 110)
+        self.caption_overlay.setText("Listening to this PC's audio…")
+        try:
+            self.captions.start()
+            self.caption_overlay.show()
+        except Exception as exc:
+            self.engine.notify.emit("Live captions", str(exc)[:240])
+
+    def _on_caption_event(self, kind, text):
+        if kind == "line" and self.caption_overlay:
+            self.caption_overlay.setText(text)
+        elif kind == "error":
+            if self.caption_overlay:
+                self.caption_overlay.hide()
+            self.engine.notify.emit("Live captions stopped", text[:240])
+
+    def set_voice(self, on):
+        cfg = dict(self.engine.cfg)
+        cfg["voice_enabled"] = on
+        self.engine.save_config(cfg)
+        if on:
+            self.voice.start()
+        else:
+            self.voice.stop()
+
+    def _eyes_unloaded(self, reason):
+        """After the minute check: say so in 'What it noticed' when the Qwen eyes gave their VRAM back."""
+        if isinstance(reason, str) and reason:
+            self.store.add_event("model", f"Vision helper (Qwen 3B) unloaded: {reason} - GPU memory freed")
+            self._refresh_events()
 
     def play_intro(self):
         """The start-up sequence over the whole window (called once, when Jarvis launches visibly)."""
@@ -471,8 +675,67 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    # -----------------------------------------------------------------------
+    # Crash doctor and download helper (the tray shows the notifications)
+    # -----------------------------------------------------------------------
+    def _crashes_found(self, crashes):
+        if not isinstance(crashes, list) or not crashes:
+            return
+        for crash in crashes:
+            meaning = f", {crash['meaning'].split(' (')[0]}" if crash.get("meaning") else ""
+            self.store.add_event("crash", crash_doctor.headline(crash) + meaning)
+            phone_alerts.try_record("crash")
+        self._refresh_events()
+        self.crash_found.emit(crashes[0])            # newest first: one notification, not a pile
+
+    def explain_crash(self, crash=None):
+        crash = crash or (self.doctor.recent[0] if self.doctor.recent else None)
+        if crash is None:
+            request = self.card.open("No recent crashes", "crash doctor",
+                                     "Windows hasn't logged any program crashes recently.")
+            self.card.set_answer(request, " ")
+            return
+        popup.explain_crash(self.card, self.engine, crash, self.doctor.recent)
+
+    ARCHIVES = (".zip",)                               # what the download helper can unzip itself
+
+    def _new_file_seen(self, folder, name):
+        if name.lower().endswith(self.ARCHIVES):
+            path = Path(folder) / name
+            # A newly visible archive may still be downloading. Wait for an unchanged size.
+            def check_size(previous=None, attempts=0):
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    return
+                if size > 0 and size == previous:
+                    # A valid ZIP central directory is written only after the archive completes.
+                    import zipfile
+                    if zipfile.is_zipfile(path):
+                        self.download_found.emit(str(path))
+                        phone_alerts.try_record("download")
+                    elif attempts < 8:
+                        QTimer.singleShot(15_000, lambda: check_size(size, attempts + 1))
+                elif attempts < 8:
+                    QTimer.singleShot(15_000, lambda: check_size(size, attempts + 1))
+            check_size()
+
+    def offer_extract(self, path):
+        """Asked from the download notification: unzip next to the file, never overwriting anything."""
+        target = str(Path(path).with_suffix(""))
+        answer = QMessageBox.question(self, "Jarvis Assistant", f"Unzip {Path(path).name} into\n{target} ?")
+        if answer != QMessageBox.Yes:
+            return
+
+        def done(result):
+            text = result if isinstance(result, str) else f"Couldn't unzip: {result}"
+            self.store.add_event("action", text.splitlines()[0])
+            self._refresh_events()
+            self.engine.notify.emit("Download helper", text.splitlines()[0])
+        run_async(lambda: pc_tools.extract(path), done)
+
     def _explain_at(self, x, y):
-        popup.explain_at(self.card, self.engine, x, y)
+        popup.explain_at(self.card, self.engine, x, y, eyes=self.eyes)
 
     def _card_to_chat(self, topic, answer):
         """'Continue in chat' on a card: put the question and answer into the chat so follow-ups have context."""
@@ -575,15 +838,31 @@ class MainWindow(QMainWindow):
         self.now_title.setWordWrap(True)
         l.addWidget(self.now_proc)
         l.addWidget(self.now_title)
+        self.now_media = QLabel("", objectName="muted")     # "♪ song - artist (app)" from wk/media.py
+        self.now_media.setWordWrap(True)
+        l.addWidget(self.now_media)
         l.addStretch(1)
         grid.addWidget(f, 0, 1, 1, 2)
         f, l = card("Local model")
-        self.now_llm = QLabel("-", objectName="big")
-        self.now_llm.setWordWrap(True)
+        self.now_llm = QPushButton("Bonsai 8B · OFFLINE", objectName="primary", clicked=self._toggle_model_online)
+        self.now_llm.setToolTip("Click the model status to bring Jarvis online or take it offline")
+        self.now_llm.setAccessibleName("Jarvis local model status and online toggle")
         l.addWidget(self.now_llm)
+        model_controls = QHBoxLayout()
+        self.now_model_8b = QPushButton("8B", clicked=lambda: self._load_model("small"))
+        self.now_model_8b.setToolTip("Load Bonsai 8B")
+        self.now_model_27b = QPushButton("27B", clicked=lambda: self._load_model("big"))
+        self.now_model_27b.setToolTip("Load Bonsai 2 27B")
+        model_controls.addWidget(self.now_model_8b)
+        model_controls.addWidget(self.now_model_27b)
+        l.addLayout(model_controls)
         self.now_llm_url = QLabel(self.engine.cfg["llm_base_url"], objectName="muted")
         self.now_llm_url.setWordWrap(True)
         l.addWidget(self.now_llm_url)
+        self.now_route = QLabel("Task route: no task yet", objectName="muted")
+        self.now_route.setWordWrap(True)
+        self.now_route.setAccessibleName("Last task model route and evidence")
+        l.addWidget(self.now_route)
         l.addStretch(1)
         grid.addWidget(f, 0, 3)
 
@@ -634,7 +913,7 @@ class MainWindow(QMainWindow):
             self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused until "
                                      f"{hhmm(self.engine.paused_until)}")
         else:
-            self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused - nothing is being recorded")
+            self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused - focus and alerts may still be logged")
         # both reactors go grey and still while paused
         mode = "online" if on else "paused"
         self.reactor.set_mode(mode)
@@ -644,6 +923,8 @@ class MainWindow(QMainWindow):
         # this is the reactor-state section: paused > model offline > online (thinking is checked per frame)
         mode = "paused" if not s["watching"] else ("online" if s["llm_online"] else "offline")
         self.emblem.set_mode(mode)
+        self.chat_ctx.setText("Use stored recent activity (live watching paused)" if not s["watching"]
+                              else "Use recent activity and local task requests")
         if not self.isVisible():
             return
         self.reactor.set_mode(mode)
@@ -655,10 +936,26 @@ class MainWindow(QMainWindow):
         # this is the focused-app and model section
         self._proc_decoder.set_text(app_label(s["process"]) if s["process"] else "-")
         self.now_title.setText(s["title"][:160])
-        self.now_llm.setText(s.get("model", "-"))
-        link = (f"<span style='color:{hud.CYAN}'>◆ ONLINE</span>" if s["llm_online"]
-                else f"<span style='color:{hud.AMBER}'>◇ OFFLINE</span>")
-        self.now_llm_url.setText(f"{link}&nbsp;&nbsp;{self.engine.cfg['llm_base_url']}")
+        if s["process"] and s["process"] not in ("explorer.exe", "pythonw.exe", "python.exe", "shellexperiencehost.exe"):
+            self._last_app = s["process"]
+        playing = media.describe()
+        self.now_media.setText(f"♪ {playing}" if playing else "")
+        self.now_llm_url.setText(self.engine.cfg["llm_base_url"])
+        route = s.get("task_route") or {}
+        if route:
+            self.now_route.setText(
+                f"Last task: {route.get('tier', '?')} → {route.get('chosen_profile', '?')} "
+                f"({route.get('runtime_state', 'unverified')}) · "
+                f"context {route.get('effective_context', '?')} · "
+                f"benchmark {route.get('benchmark_state', 'unknown')}"
+                f" {route.get('benchmark_record_id') or ''} · "
+                f"focus {route.get('focus_lease', 'none')}\n"
+                f"Reason: {route.get('reason', 'unknown')}"
+                + (f" · score {route['benchmark_score']:.2f}"
+                   if isinstance(route.get('benchmark_score'), (int, float)) else ""))
+        else:
+            self.now_route.setText("Task route: no task yet")
+        self._sync_model_controls(bool(s["llm_online"]))
 
         # this loop feeds the gauges; RAM and GPU temperature warn at the thresholds set in Settings
         cfg = self.engine.cfg
@@ -668,6 +965,54 @@ class MainWindow(QMainWindow):
             gauge.set_limits(warn, min(gauge.maximum, warn + (7 if key == "gpu_temp" else 8)))
             gauge.set_value(s.get(key))
 
+    def _sync_model_controls(self, online):
+        """Keep model actions legible and disable duplicate requests while a load is underway."""
+        manager = self.engine.models
+        model = manager.describe()
+        state = "ONLINE · CLICK TO STOP" if online else "OFFLINE · CLICK TO START"
+        self.now_llm.setText(f"{model}  |  {state}")
+        self.now_llm.setEnabled(not manager.busy and not manager.reviewing)
+        self.now_model_8b.setEnabled(not manager.busy and not manager.reviewing)
+        self.now_model_27b.setEnabled(not manager.busy and not manager.reviewing)
+        if hasattr(self, "s_load_8b"):
+            self.s_load_8b.setEnabled(not manager.busy and not manager.reviewing)
+            self.s_load_27b.setEnabled(not manager.busy and not manager.reviewing)
+
+    def _set_model_enabled(self, enabled):
+        cfg = dict(self.engine.cfg)
+        cfg["llm_enabled"] = enabled
+        self.engine.save_config(cfg)
+
+    def _load_model(self, profile):
+        """Explicitly load one Jarvis profile; all server and VRAM checks remain in ModelManager.
+        Only one model ever runs (8B or 27B). Loading the 27B yourself PINS it, so away mode's
+        welcome-back never swaps it out again; loading the 8B clears the pin (the normal state)."""
+        cfg = dict(self.engine.cfg)
+        cfg["llm_enabled"] = True
+        cfg["llm_pinned_profile"] = "big" if profile == "big" else None
+        self.engine.save_config(cfg)
+
+        def load():
+            if profile == "big":
+                self.eyes.stop()     # the 27B sees by itself and needs the VRAM: the Qwen eyes go first
+            self.engine.models.switch(profile, manual=True)
+        threading.Thread(target=load, daemon=True, name=f"jarvis-model-{profile}").start()
+        self._sync_model_controls(self.engine.llm_online)
+        self.now_llm.setEnabled(False)
+        self.now_model_8b.setEnabled(False)
+        self.now_model_27b.setEnabled(False)
+
+    def _toggle_model_online(self):
+        manager = self.engine.models
+        if manager.busy or manager.reviewing:
+            return
+        if self.engine.llm_online:
+            self._set_model_enabled(False)
+            manager.stop_async()
+        else:
+            self._load_model(manager.active)
+        self._sync_model_controls(self.engine.llm_online)
+
     def _refresh_today(self):
         from . import delegate_tools
         projects = self.store.projects(include_done=False)
@@ -676,9 +1021,10 @@ class MainWindow(QMainWindow):
         self.memory_brief.setText(f"{len(facts)} saved anchors  ·  {len(projects)} open objectives\n"
                                   f"Recall: {self.engine.cfg.get('memory_fact_mode', 'related')}")
         links = delegate_tools.available()
-        self.tools_brief.setText(f"Claude {'ready' if links['claude'] else 'missing'}  ·  "
-                                 f"Codex {'ready' if links['codex'] else 'missing'}\n"
-                                 f"8B routing {'enabled' if self.engine.cfg.get('tool_use_8b') else 'paused'}")
+        self.tools_brief.setText(f"Claude CLI {'installed' if links['claude'] else 'missing'}  ·  "
+                                 f"Codex CLI {'installed' if links['codex'] else 'missing'}\n"
+                                 f"Optional CLI consultation {'allowed' if self.engine.cfg.get('tool_use_8b') else 'off'}; "
+                                 "runtime status is above")
         start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
         totals = [(p, sec) for p, sec in self.store.app_totals(start, time.time()) if sec >= 30]
         fill_table(self.today_table, [(app_label(p), fmt_dur(sec)) for p, sec in totals], keys=[p for p, _ in totals])
@@ -950,7 +1296,7 @@ class MainWindow(QMainWindow):
     # MEMORY page
     # -----------------------------------------------------------------------
     def _build_memory(self):
-        w, lay = page("Memory", "Saved facts and Jarvis's continuity settings. Also from chat: /remember <fact>")
+        w, lay = page("Memory", "Saved facts and Jarvis's continuity settings. /learn-once <packet.json> proposes one evidence-backed pending lesson; Keep or Dismiss it here.")
         row = QHBoxLayout()
         self.mem_text = QLineEdit(placeholderText="e.g. My main project is AIWF Studio on F:\\")
         row.addWidget(self.mem_text, 1)
@@ -967,7 +1313,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(candidate_title)
         self.candidate_list = QListWidget()
         self.candidate_list.setMaximumHeight(110)
-        self.candidate_list.setToolTip("Bonsai 8B suggestions from your own chat messages; none become memory without approval.")
+        self.candidate_list.setToolTip("Suggestions from direct chat or an evidence-backed lesson in a user-selected /learn or /learn-once packet; none become memory without approval.")
         lay.addWidget(self.candidate_list)
         row = QHBoxLayout()
         row.addWidget(QPushButton("Keep selected", objectName="primary",
@@ -983,10 +1329,18 @@ class MainWindow(QMainWindow):
     def _refresh_memory(self):
         self._facts = self.store.facts()
         self.mem_list.clear()
-        self.mem_list.addItems([f for _, f in self._facts])
+        if self._facts:
+            self.mem_list.addItems([f for _, f in self._facts])
+        else:
+            self.mem_list.addItem("No saved facts yet. Use Remember above to save one.")
+            self.mem_list.item(0).setFlags(Qt.NoItemFlags)
         self._candidates = self.store.fact_candidates()
         self.candidate_list.clear()
-        self.candidate_list.addItems([f"{fact}  ·  {reason}" for _, fact, reason in self._candidates])
+        if self._candidates:
+            self.candidate_list.addItems([f"{fact}  ·  {reason}" for _, fact, reason in self._candidates])
+        else:
+            self.candidate_list.addItem("No pending suggestions. New suggestions need your review before keeping.")
+            self.candidate_list.item(0).setFlags(Qt.NoItemFlags)
 
     def _resolve_candidate(self, keep):
         row = self.candidate_list.currentRow()
@@ -1023,12 +1377,12 @@ class MainWindow(QMainWindow):
         self.chat_view = QTextBrowser()
         self.chat_view.setOpenExternalLinks(True)
         lay.addWidget(self.chat_view, 1)
-        row = QHBoxLayout()
-        self.chat_ctx = QCheckBox("Use recent activity and local task requests", checked=True)
-        row.addWidget(self.chat_ctx)
-        row.addStretch(1)
-        row.addWidget(QLabel("/status   /settings   /files   /handoff   /remember …", objectName="muted"))
-        lay.addLayout(row)
+        self.chat_ctx = QCheckBox("Include saved recent activity and local task requests", checked=True)
+        self.chat_ctx.setToolTip("Adds retained local context to this reply; it does not turn Watching on.")
+        lay.addWidget(self.chat_ctx)
+        help_label = QLabel("Local: /status · /settings · /remember  |  Developer: /advisory-preview file.json", objectName="muted")
+        help_label.setWordWrap(True)
+        lay.addWidget(help_label)
         row = QHBoxLayout()
         self.chat_in = QLineEdit(placeholderText="Ask anything - e.g. 'what was that error I copied earlier?'")
         self.chat_in.returnPressed.connect(self._send_chat)
@@ -1044,6 +1398,14 @@ class MainWindow(QMainWindow):
         entries = list(self.store.chat_tail(40))
         if pending_text:
             entries.append(("user", pending_text))
+        if not entries:
+            self.chat_view.setHtml(
+                "<div style='padding:24px;color:#9bc8d8'>"
+                "<h3>Start a task</h3><p>Use <b>/status</b> for a local readiness check, "
+                "or ask Jarvis to inspect a selected project. Model work needs the local model online.</p>"
+                "<p>Developer advisory preview: <b>/advisory-preview file.json</b> previews only; "
+                "the Kairo provider is disabled under the current authority.</p></div>")
+            return
         hud.render_chat(self.chat_view, entries, thinking=pending)
 
     def _send_chat(self):
@@ -1051,6 +1413,25 @@ class MainWindow(QMainWindow):
         if not text:
             return
         self.chat_in.clear()
+        advisory_approval = None
+        if text.lower().startswith("/advisory-request"):
+            parts = text.split()
+            preview = getattr(self.engine, "_advisory_preview", None)
+            if len(parts) == 2 and preview is not None:
+                question = ("Confirm the exact advisory preview for goal:\n"
+                            + preview["payload"]["goal"] + "\n\nSHA256: " + preview["sha256"] +
+                            "\n\nThe Kairo production provider is disabled under CAP-01. "
+                            "This confirmation cannot execute its suggested steps.")
+                if QMessageBox.question(self, "Confirm advisory preview", question) != QMessageBox.Yes:
+                    self.chat_in.setText(text)
+                    return
+                try:
+                    advisory_approval = task_blueprint.approve_preview(
+                        preview, parts[1], owner_confirmed=True)
+                except PermissionError:
+                    QMessageBox.warning(self, "Advisory preview", "The digest differs from the current preview.")
+                    self.chat_in.setText(text)
+                    return
 
         # this is the slash-command section: handled locally, no model call
         if text.startswith("/remember "):
@@ -1078,7 +1459,7 @@ class MainWindow(QMainWindow):
             self.chat_btn.setEnabled(True)
             self._render_chat()
 
-        run_async(lambda: self.engine.chat_reply(text, include), done)
+        run_async(lambda: self.engine.chat_reply(text, include, advisory_approval), done)
 
     # -----------------------------------------------------------------------
     # PROJECTS page: work Jarvis does on its own while you're away
@@ -1271,17 +1652,43 @@ class MainWindow(QMainWindow):
         self._rc_rows = []
         return w
 
+    def _refresh_recall_index(self):
+        run_async(lambda: (self.recall.refresh(), self.recall.server.stop_if_idle()), lambda _r: None)
+
+    def _smart_recall_on(self):
+        return self.engine.cfg.get("recall_semantic", True) and model_control_allowed()
+
+    def _show_recall_rows(self):
+        fill_table(self.rc_table, [
+            (popup.when_label(ts), source, where,
+             " ".join(text.split())[:160] + (f"   ({fmt_dur(extra)} total)" if extra else ""))
+            for ts, source, where, text, extra in self._rc_rows])
+
     def _recall_search(self):
         query = self.rc_query.text().strip()
         if not query:
             return
         self._rc_rows = self.store.search(query)
-        fill_table(self.rc_table, [
-            (popup.when_label(ts), source, where,
-             " ".join(text.split())[:160] + (f"   ({fmt_dur(extra)} total)" if extra else ""))
-            for ts, source, where, text, extra in self._rc_rows])
+        self._show_recall_rows()
         self.rc_view.setMarkdown(f"_{len(self._rc_rows)} matches for:_ " + ", ".join(
             f"`{k}`" for k in self.store.keywords(query)))
+        if not self._smart_recall_on():
+            return
+        # this is the meaning pass: results found by meaning (not words) are added below, marked "≈"
+        keyword_count = len(self._rc_rows)
+
+        def add_meaning(hits):
+            if query != self.rc_query.text().strip() or not isinstance(hits, list):
+                return                                   # a newer search replaced this one
+            seen = {(round(r[0]), r[3][:80]) for r in self._rc_rows}
+            extra = [(ts, f"{source} ≈", where, text, extra) for ts, source, where, text, extra, _score in hits
+                     if (round(ts), text[:80]) not in seen]
+            self._rc_rows = self._rc_rows + extra
+            self._show_recall_rows()
+            note = f" · {len(extra)} more by meaning (≈)" if extra else ""
+            self.rc_view.setMarkdown(f"_{keyword_count} keyword matches{note} for:_ " + ", ".join(
+                f"`{k}`" for k in self.store.keywords(query)))
+        run_async(lambda: self.recall.search(query, limit=20), add_meaning)
 
     def _recall_preview(self, row):
         if 0 <= row < len(self._rc_rows):
@@ -1293,8 +1700,9 @@ class MainWindow(QMainWindow):
         if not query:
             return
         self._recall_search()
-        matches = popup.memory_matches(self.engine, query, limit=40)
-        if not matches:
+        keyword_matches = popup.memory_matches(self.engine, query, limit=40)
+        smart = self._smart_recall_on()
+        if not keyword_matches and not smart:
             self.rc_view.setMarkdown("_Nothing in Jarvis's memory matches that. Try different words._")
             return
         self.rc_ask_btn.setEnabled(False)
@@ -1304,7 +1712,20 @@ class MainWindow(QMainWindow):
             self.rc_ask_btn.setEnabled(True)
             self.rc_view.setMarkdown(llm_error(result) if isinstance(result, Exception) else result)
 
-        run_async(lambda: self.engine.llm.chat([
+        def gather():
+            # keyword matches plus meaning matches (the meaning search runs here, off the GUI thread)
+            lines = [keyword_matches] if keyword_matches else []
+            if smart:
+                for ts, source, where, text, extra, _s in self.recall.search(query, limit=15):
+                    spent = f" ({fmt_dur(extra)} total)" if extra else ""
+                    lines.append(f"- {popup.when_label(ts)} [{source}{': ' + where if where else ''}] "
+                                 f"{' '.join(text.split())[:220]}{spent}")
+            return "\n".join(lines)
+
+        def ask(matches):
+            if not matches:
+                return "_Nothing in Jarvis's memory matches that. Try different words._"
+            return self.engine.llm.chat([
             {"role": "system", "content": SYSTEM_PERSONA},
             {"role": "user", "content":
                 f"It is now {time.strftime('%A %H:%M')}. Records from Jarvis's memory that match "
@@ -1312,13 +1733,14 @@ class MainWindow(QMainWindow):
                 f"{matches}\n\nQuestion: {query}\n\nAnswer using ONLY these records, talking to him as 'you'. "
                 "Quote the time label exactly as written in the record (e.g. 'yesterday 19:54') - don't "
                 "convert it to a date. If the records don't answer it, say so."}],
-            max_tokens=400), done)
+                max_tokens=400)
+        run_async(lambda: ask(gather()), done)
 
     # -----------------------------------------------------------------------
     # SETTINGS page
     # -----------------------------------------------------------------------
     def _build_settings(self):
-        w, outer = page("Settings", "Everything here is stored in data\\config.json next to the app.")
+        w, outer = page("Settings", "Settings are stored in Jarvis's selected data folder.")
         # the form is taller than the window, so it lives in a scroll area
         scroll = QScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
         inner = QWidget(objectName="page")
@@ -1330,6 +1752,9 @@ class MainWindow(QMainWindow):
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
         self.s_checks = {}
+        sections = {"watch_windows": "OBSERVATION & PRIVACY",
+                    "welcome_back": "BACKGROUND BEHAVIOR",
+                    "llm_autostart_server": "MODELS, GPU & PROJECT WORK"}
         for key, label in (("watch_windows", "Track focused windows"),
                            ("watch_task_windows", "Track visible Claude/Codex window titles while unfocused"),
                            ("watch_clipboard", "Keep clipboard history"),
@@ -1341,10 +1766,14 @@ class MainWindow(QMainWindow):
                            ("llm_autostart_server", "Start Jarvis's dedicated local model when the app opens"),
                            ("away_model_enabled", "While I'm away, switch to Bonsai 2 27B"),
                            ("away_free_comfyui", "...and ask an idle ComfyUI to unload its models to make room"),
+                           ("task_focus_27b_enabled", "Allow a complex chat task to lease Jarvis-owned 27B once (GPU checks apply)"),
                            ("projects_enabled", "While I'm away, work on my active projects")):
+            if key in sections:
+                form.addRow(QLabel(sections[key], objectName="paneltitle"))
             self.s_checks[key] = QCheckBox(label, checked=bool(cfg[key]))
             form.addRow("", self.s_checks[key])
         self.s_spins = {}
+        form.addRow(QLabel("TIMING & RETENTION", objectName="paneltitle"))
         for key, label, lo, hi, suffix in (
                 ("poll_seconds", "Sample every", 1, 60, " s"), ("idle_seconds", "Count as away after", 30, 3600, " s"),
                 ("digest_minutes", "Journal entry every", 10, 1440, " min"),
@@ -1356,6 +1785,7 @@ class MainWindow(QMainWindow):
                 ("retention_days", "Keep raw history for", 1, 3650, " days")):
             self.s_spins[key] = QSpinBox(minimum=lo, maximum=hi, value=int(cfg[key]), suffix=suffix)
             form.addRow(label, self.s_spins[key])
+        form.addRow(QLabel("FOLDERS & EXCLUSIONS", objectName="paneltitle"))
         self.s_folders = QPlainTextEdit("\n".join(cfg["folders"]))
         self.s_folders.setFixedHeight(64)
         form.addRow("Watched folders (one per line)", self.s_folders)
@@ -1363,16 +1793,24 @@ class MainWindow(QMainWindow):
         form.addRow("Never record these apps", self.s_procs)
         self.s_words = QLineEdit(", ".join(cfg["excluded_title_words"]))
         form.addRow("…or windows whose title contains", self.s_words)
+        form.addRow(QLabel("MODEL ENDPOINT & VISION", objectName="paneltitle"))
         self.s_url = QLineEdit(cfg["llm_base_url"])
         form.addRow("Local model API", self.s_url)
         self.s_model = QLineEdit(cfg["llm_model"], placeholderText="blank = whatever the server has loaded")
         form.addRow("Model name", self.s_model)
-        self.s_explain = QCheckBox("Explain whatever I Ctrl+click, anywhere on the PC",
+        model_actions = QHBoxLayout()
+        self.s_load_8b = QPushButton("Load Bonsai 8B", clicked=lambda: self._load_model("small"))
+        self.s_load_27b = QPushButton("Load Bonsai 2 27B", clicked=lambda: self._load_model("big"))
+        model_actions.addWidget(self.s_load_8b)
+        model_actions.addWidget(self.s_load_27b)
+        form.addRow("Load a model now", model_actions)
+        self.s_explain = QCheckBox("Explain whatever I click with the explain trigger, anywhere on the PC",
                                    checked=bool(cfg["explain_on_click"]))
         form.addRow("", self.s_explain)
         self.s_trigger = QComboBox()
+        self.s_trigger.addItem("Ctrl + Shift + click", "ctrl+shift")
         self.s_trigger.addItem("Ctrl + click", "ctrl")
-        self.s_trigger.addItem("Ctrl + Alt + click (if Ctrl+click clashes with an app)", "ctrl+alt")
+        self.s_trigger.addItem("Ctrl + Alt + click", "ctrl+alt")
         self.s_trigger.setCurrentIndex(max(0, self.s_trigger.findData(cfg["explain_trigger"])))
         form.addRow("Explain trigger", self.s_trigger)
         self.s_autostart = QCheckBox("Start Jarvis Assistant when Windows starts (in the tray)", checked=bool(cfg["autostart"]))
@@ -1446,14 +1884,26 @@ class Tray(QSystemTrayIcon):
         self.watch_action = QAction("Watching", menu, checkable=True, checked=engine.watching)
         self.watch_action.toggled.connect(lambda on: on != engine.watching and engine.set_watching(on))
         menu.addAction(self.watch_action)
-        self.explain_action = QAction("Ctrl+click to explain", menu, checkable=True,
+        self.explain_action = QAction("Ctrl+Shift+click to explain", menu, checkable=True,
                                       checked=bool(engine.cfg["explain_on_click"]))
         self.explain_action.toggled.connect(self._toggle_explain)
         menu.addAction(self.explain_action)
+        # the label follows the trigger chosen in Settings (read each time the menu opens)
+        menu.aboutToShow.connect(lambda: self.explain_action.setText(
+            f"{pointer.trigger_label(engine.cfg.get('explain_trigger'))} to explain"))
         menu.addAction("Pause 30 min", lambda: engine.set_watching(False, 30))
         menu.addAction("Pause 2 hours", lambda: engine.set_watching(False, 120))
         menu.addSeparator()
-        menu.addAction("Quit", app.quit)
+        self.voice_action = QAction('Listen for "Hey Jarvis"', menu, checkable=True,
+                                    checked=bool(engine.cfg.get("voice_enabled", True)))
+        self.voice_action.toggled.connect(window.set_voice)
+        menu.addAction(self.voice_action)
+        menu.addAction("Voice act this game (Ctrl+Alt+V)", lambda: window.toggle_voice_acting())
+        menu.addAction("Redraw its dialogue box", lambda: window.toggle_voice_acting(repick=True))
+        menu.addAction("Start / stop live captions", window.toggle_captions)
+        menu.addAction("Explain last crash", lambda: window.explain_crash())
+        quit_action = menu.addAction("Quit", app.quit)
+        feature_pages.extend_tray(self, menu, quit_action)   # snip, game help, wrap-up, stop autoplay
         self.setContextMenu(menu)
         self._menu = menu  # keep a reference so Python doesn't garbage-collect it
         menu.setStyleSheet(window.styleSheet())   # the tray menu has no parent window, so give it the HUD sheet
@@ -1465,6 +1915,8 @@ class Tray(QSystemTrayIcon):
         engine.notify.connect(self._notify)
         engine.welcome_back.connect(self._welcome_back)
         engine.error_help.connect(self._error_help)
+        window.crash_found.connect(self._crash)
+        window.download_found.connect(self._download)
         self._sync(engine.watching)
 
     def _sync(self, on):
@@ -1487,6 +1939,14 @@ class Tray(QSystemTrayIcon):
         app = sensors.app_description(info["last_process"]) or info["last_process"]
         self._say("Welcome back", f"You were in {app}: {info['last_title'][:90]}\nClick for a quick recap.",
                   lambda: popup.welcome_card(self.window.card, self.engine, info))
+
+    def _crash(self, crash):
+        self._say(crash_doctor.headline(crash), "Click for the likely cause and the fix.",
+                  lambda: self.window.explain_crash(crash))
+
+    def _download(self, path):
+        self._say(f"Downloaded {Path(path).name}", "Click to unzip it next to the file.",
+                  lambda: self.window.offer_extract(path))
 
     def _error_help(self, clip_id, headline):
         self._say("You copied an error", f"{headline}\nClick for the cause and fix.",
