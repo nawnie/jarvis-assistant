@@ -252,9 +252,12 @@ def extract(archive, destination=""):
 
 def open_path(path):
     target = _clean(path)
-    if not re.match(r"^[a-z]+://", target, re.I):
+    if re.match(r"^[a-z]+://", target, re.I):
+        if not re.match(r"^https?://", target, re.I):
+            raise PermissionError("only HTTP(S) URLs can be opened")
+    else:
         path_policy.check_path(target)
-    if not os.path.exists(target) and not re.match(r"^[a-z]+://", target, re.I):
+    if not os.path.exists(target) and not re.match(r"^https?://", target, re.I):
         return f"Nothing found at {target}"
     os.startfile(target)
     return f"Opened {target}"

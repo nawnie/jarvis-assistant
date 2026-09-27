@@ -281,7 +281,7 @@ for _name in ("list_folder", "find_files", "move", "copy", "rename", "make_folde
         def call(**kwargs):
             for field in fields:
                 if field in ("path", "source", "destination") and kwargs[field] and \
-                        not (tool_name == "open" and re.match(r"^[a-z]+://", kwargs[field], re.I)):
+                        not (tool_name == "open" and re.match(r"^https?://", kwargs[field], re.I)):
                     path_policy.check_path(kwargs[field], mutation=tool_name not in
                                            ("list_folder", "find_files", "disk_space"))
             return fn(*[kwargs[p] for p in fields])
