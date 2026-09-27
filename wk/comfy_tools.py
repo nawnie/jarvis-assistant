@@ -56,6 +56,15 @@ def available(cfg: dict) -> bool:
     return bool(_workflows(cfg))
 
 
+def endpoint_configured(cfg: dict) -> bool:
+    """Existing tickets remain manageable after generation is switched off."""
+    try:
+        _base(cfg)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def list_workflows(cfg: dict) -> dict:
     """List configured IDs; no model paths or arbitrary graphs are exposed."""
     return {"workflows": sorted(_workflows(cfg))}
@@ -199,19 +208,28 @@ def submit(cfg: dict, workflow_id: str, prompt: str,
     job_id = str(uuid.uuid4())
     ticket = {"job_id": job_id, "state": "preparing", "workflow_id": workflow_id,
               "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-              "created_at": time.time(), "comfy_url": _base(cfg), "gpu_preflight": guard}
+              "created_at": time.time(), "comfy_url": _base(cfg), "gpu_preflight": guard,
+              "prompt_id": job_id}
     _write_ticket(job_id, ticket)
     graph = _graph(checkpoint, prompt, "Jarvis_" + job_id.replace("-", "")[:16])
-    result = _request(cfg, "/prompt", {"prompt": graph, "client_id": "jarvis-" + job_id})
+    try:
+        result = _request(cfg, "/prompt", {"prompt": graph,
+                                           "client_id": "jarvis-" + job_id,
+                                           "prompt_id": job_id})
+    except Exception as exc:
+        ticket["state"] = "submission_uncertain"
+        ticket["submission_error_type"] = type(exc).__name__
+        _write_ticket(job_id, ticket)
+        raise RuntimeError(f"Comfy response was lost or rejected; inspect Jarvis job {job_id} before retrying") from exc
     prompt_id = result.get("prompt_id") if isinstance(result, dict) else None
     try:
         valid_prompt_id = isinstance(prompt_id, str) and str(uuid.UUID(prompt_id)) == prompt_id
     except ValueError:
         valid_prompt_id = False
-    if not valid_prompt_id:
+    if not valid_prompt_id or prompt_id != job_id:
         ticket["state"] = "submission_uncertain"
         _write_ticket(job_id, ticket)
-        raise RuntimeError("ComfyUI did not return a prompt ID; inspect the job before retrying")
+        raise RuntimeError(f"ComfyUI did not confirm Jarvis prompt ID; inspect job {job_id} before retrying")
     ticket.update({"state": "submitted", "prompt_id": prompt_id})
     _write_ticket(job_id, ticket)
     return {"job_id": job_id, "state": "submitted", "prompt_id": prompt_id,
@@ -230,6 +248,9 @@ def wait(cfg: dict, job_id: str, wait_seconds: int = 60,
                 hashlib.sha256(image_path.read_bytes()).hexdigest() != ticket["sha256"]:
             raise IOError("saved Comfy artifact changed since completion")
         return {k: ticket[k] for k in ("job_id", "state", "image_path", "sha256", "bytes")}
+    if ticket.get("state") in {"failed", "cancelled"}:
+        return {"job_id": job_id, "state": ticket["state"],
+                "comfy_status": ticket.get("comfy_status")}
     prompt_id = ticket.get("prompt_id")
     if not isinstance(prompt_id, str) or not prompt_id:
         return {"job_id": job_id, "state": "submission_uncertain"}
@@ -246,9 +267,14 @@ def wait(cfg: dict, job_id: str, wait_seconds: int = 60,
         if entry:
             status = (entry.get("status") or {}).get("status_str")
             if status != "success":
-                ticket["state"] = "failed"
+                messages = (entry.get("status") or {}).get("messages") or []
+                interrupted = (ticket.get("state") == "cancel_requested" and status == "error" and
+                               any(isinstance(message, (list, tuple)) and message and
+                                   message[0] == "execution_interrupted" for message in messages))
+                ticket["state"] = "cancelled" if interrupted else "failed"
+                ticket["comfy_status"] = status
                 _write_ticket(job_id, ticket)
-                return {"job_id": job_id, "state": "failed", "comfy_status": status}
+                return {"job_id": job_id, "state": ticket["state"], "comfy_status": status}
             images = (entry.get("outputs") or {}).get("10", {}).get("images") or []
             if len(images) != 1:
                 raise ValueError("ComfyUI did not return exactly one image from the host SaveImage node")
@@ -290,3 +316,32 @@ def wait(cfg: dict, job_id: str, wait_seconds: int = 60,
             time.sleep(delay)
         else:
             cancel.wait(delay)
+
+
+def cancel_job(cfg: dict, job_id: str) -> dict:
+    """Request targeted cancellation of one Jarvis ticket, without global interrupt."""
+    ticket = _read_ticket(job_id)
+    if ticket["comfy_url"] != _base(cfg):
+        raise ValueError("Comfy endpoint changed since this job was submitted")
+    state = ticket.get("state")
+    if state in {"complete", "failed", "cancelled"}:
+        return {"job_id": job_id, "state": state, "cancel_dispatched": False}
+    prompt_id = ticket.get("prompt_id")
+    try:
+        valid = isinstance(prompt_id, str) and str(uuid.UUID(prompt_id)) == prompt_id
+    except ValueError:
+        valid = False
+    if not valid:
+        return {"job_id": job_id, "state": "submission_uncertain", "cancel_dispatched": False}
+    # This installed Comfy route targets the exact prompt under its queue lock.
+    # Older servers without the route fail closed; never use global /interrupt.
+    response = _request(cfg, f"/api/jobs/{prompt_id}/cancel", {})
+    if not isinstance(response, dict) or type(response.get("cancelled")) is not bool:
+        raise ValueError("ComfyUI did not confirm whether targeted cancellation was dispatched")
+    if not response["cancelled"]:
+        return {"job_id": job_id, "state": state, "cancel_dispatched": False,
+                "note": "Job may have finished or be unavailable; inspect its history"}
+    ticket["state"] = "cancel_requested"
+    _write_ticket(job_id, ticket)
+    return {"job_id": job_id, "state": "cancel_requested", "cancel_dispatched": True,
+            "note": "Cancellation was sent to this prompt; completion is not yet confirmed"}

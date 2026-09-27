@@ -345,9 +345,15 @@ def selected(question: str, cfg: dict | None = None, engine=None) -> dict[str, T
                                     _params({"server": STR, "tool": STR, "arguments": OBJ},
                                             ("server", "tool", "arguments")),
                                     lambda server, tool, arguments: mcp_client.call(cfg, server, tool, arguments), True)
-    if comfy_tools.available(cfg) and any(
-            phrase in lower for phrase in ("generate image", "make image", "create image", "generate a picture",
-                                    "draw image", "draw a picture", "comfy", "illustration")):
+    image_cancel = any(phrase in lower for phrase in (
+        "cancel image", "stop image", "cancel comfy", "stop comfy"))
+    image_request = not image_cancel and any(phrase in lower for phrase in (
+        "generate image", "make image", "create image", "generate a picture",
+        "draw image", "draw a picture", "comfy", "illustration"))
+    image_manage = any(phrase in lower for phrase in (
+        "image job", "cancel image", "stop image", "image status", "wait image",
+        "cancel comfy", "stop comfy"))
+    if comfy_tools.available(cfg) and image_request:
         offered["comfy_workflows"] = Tool(
             "comfy_workflows", "List owner-configured local Comfy image workflow IDs.",
             _params({}, ()), lambda: comfy_tools.list_workflows(cfg))
@@ -356,10 +362,16 @@ def selected(question: str, cfg: dict | None = None, engine=None) -> dict[str, T
             _params({"workflow_id": STR, "prompt": STR}, ("workflow_id", "prompt")),
             lambda workflow_id, prompt, cancel=None, guard_seconds=100:
                 comfy_tools.submit(cfg, workflow_id, prompt, cancel, guard_seconds), True)
+    if comfy_tools.endpoint_configured(cfg) and (image_request or image_manage):
         offered["comfy_wait"] = Tool(
             "comfy_wait", "Wait for a Jarvis-submitted Comfy job and save its verified PNG when complete. A queued result is not a generated image.",
             _params({"job_id": STR, "wait_seconds": INT}, ("job_id",)),
             lambda job_id, wait_seconds=60, cancel=None: comfy_tools.wait(cfg, job_id, wait_seconds, cancel), True)
+        if image_cancel:
+            offered["comfy_cancel"] = Tool(
+                "comfy_cancel", "Request targeted cancellation of one Jarvis-submitted image job. A dispatched request is not terminal proof.",
+                _params({"job_id": STR}, ("job_id",)),
+                lambda job_id: comfy_tools.cancel_job(cfg, job_id), True)
     return offered
 
 
@@ -448,9 +460,9 @@ def execute(name: str, arguments: dict, allowed: dict[str, Tool], timeout_second
                                                        "nothing found", "moved nothing", "copied nothing",
                                                        "deleted nothing", "could not delete"))))
         failed = mcp_error or command_error or comfy_error or legacy_error
-        pending = bool(name == "comfy_wait" and isinstance(result, dict) and
+        pending = bool(name in {"comfy_wait", "comfy_cancel"} and isinstance(result, dict) and
                        result.get("state") in {"not_finished_or_history_unavailable",
-                                               "wait_cancelled_job_not_cancelled"})
+                                               "wait_cancelled_job_not_cancelled", "cancel_requested"})
         _last_results[name] = {"state": "failed" if failed else "pending" if pending else "healthy",
                                "tested_at": time.time()}
         return {"ok": not failed, "pending": pending, "tool": name, "result": result,

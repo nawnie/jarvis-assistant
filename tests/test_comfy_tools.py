@@ -93,6 +93,52 @@ class ComfyToolsTests(unittest.TestCase):
         request.assert_not_called()
         self.assertEqual(comfy_tools._read_ticket(job_id)["state"], "submitted")
 
+    def test_targeted_cancel_requires_jarvis_ticket_and_never_uses_global_interrupt(self):
+        job_id, prompt_id = str(uuid.uuid4()), str(uuid.uuid4())
+        with mock.patch.object(comfy_tools, "_request") as request:
+            with self.assertRaisesRegex(ValueError, "Jarvis did not create"):
+                comfy_tools.cancel_job(self.cfg, job_id)
+        request.assert_not_called()
+        comfy_tools._write_ticket(job_id, {"job_id": job_id, "state": "submitted",
+                                          "prompt_id": prompt_id,
+                                          "comfy_url": "http://127.0.0.1:8188"})
+        with mock.patch.object(comfy_tools, "_request", return_value={"cancelled": True}) as request:
+            result = comfy_tools.cancel_job(self.cfg, job_id)
+        self.assertEqual(result["state"], "cancel_requested")
+        self.assertTrue(result["cancel_dispatched"])
+        request.assert_called_once_with(self.cfg, f"/api/jobs/{prompt_id}/cancel", {})
+        self.assertEqual(comfy_tools._read_ticket(job_id)["state"], "cancel_requested")
+
+    def test_cancel_noop_does_not_claim_terminal_state(self):
+        job_id, prompt_id = str(uuid.uuid4()), str(uuid.uuid4())
+        comfy_tools._write_ticket(job_id, {"job_id": job_id, "state": "submitted",
+                                          "prompt_id": prompt_id,
+                                          "comfy_url": "http://127.0.0.1:8188"})
+        with mock.patch.object(comfy_tools, "_request", return_value={"cancelled": False}):
+            result = comfy_tools.cancel_job(self.cfg, job_id)
+        self.assertFalse(result["cancel_dispatched"])
+        self.assertEqual(comfy_tools._read_ticket(job_id)["state"], "submitted")
+
+    def test_cancelled_history_requires_interrupt_receipt(self):
+        job_id, prompt_id = str(uuid.uuid4()), str(uuid.uuid4())
+        comfy_tools._write_ticket(job_id, {"job_id": job_id, "state": "cancel_requested",
+                                          "prompt_id": prompt_id,
+                                          "comfy_url": "http://127.0.0.1:8188"})
+        history = {prompt_id: {"status": {"status_str": "error",
+                                        "messages": [["execution_interrupted", {"prompt_id": prompt_id}]]}}}
+        with mock.patch.object(comfy_tools, "_request", return_value=history):
+            result = comfy_tools.wait(self.cfg, job_id, 0)
+        self.assertEqual(result["state"], "cancelled")
+        self.assertEqual(comfy_tools.wait(self.cfg, job_id, 0)["state"], "cancelled")
+        offered = tool_registry.selected("cancel image job", self.cfg)
+        self.assertIn("comfy_cancel", offered)
+        self.assertNotIn("comfy_cancel", tool_registry.selected("generate image", self.cfg))
+        disabled = {**self.cfg, "comfy_generation_enabled": False}
+        self.assertIn("comfy_cancel", tool_registry.selected("cancel image job", disabled))
+        self.assertIn("comfy_wait", tool_registry.selected("image job status", disabled))
+        self.assertNotIn("comfy_submit", tool_registry.selected("generate image", disabled))
+        self.assertNotIn("comfy_submit", tool_registry.selected("cancel comfy job", self.cfg))
+
     def test_gpu_guard_fails_closed_before_submission(self):
         self.guard_patch.stop()
         with mock.patch.object(comfy_tools.sensors, "system_stats", return_value={
@@ -113,11 +159,12 @@ class ComfyToolsTests(unittest.TestCase):
         self.assertEqual(result["minimum_free_mb"], 11151)
 
     def test_submit_wait_and_verify_host_owned_graph(self):
-        prompt_id = str(uuid.uuid4())
+        prompt_id = None
         png_bytes = _png()
         calls = []
 
         def request(cfg, route, payload=None, image=False):
+            nonlocal prompt_id
             calls.append((route, payload))
             if route.startswith("/object_info/"):
                 return {"CheckpointLoaderSimple": {"input": {"required": {
@@ -125,6 +172,7 @@ class ComfyToolsTests(unittest.TestCase):
             if route == "/queue":
                 return {"queue_running": [], "queue_pending": []}
             if route == "/prompt":
+                prompt_id = payload["prompt_id"]
                 return {"prompt_id": prompt_id}
             if route == "/history/" + prompt_id:
                 return {prompt_id: {"status": {"status_str": "success"},
@@ -142,6 +190,7 @@ class ComfyToolsTests(unittest.TestCase):
             self.assertEqual(graph["4"]["inputs"]["ckpt_name"], "dreamshaper_8.safetensors")
             self.assertEqual(graph["5"]["inputs"]["width"], 384)
             self.assertEqual(graph["6"]["inputs"]["text"], "a cyan orb")
+            self.assertEqual(calls[3][1]["prompt_id"], receipt["job_id"])
             finished = comfy_tools.wait(self.cfg, receipt["job_id"], 0)
         self.assertEqual(finished["state"], "complete")
         self.assertEqual(Path(finished["image_path"]).read_bytes(), png_bytes)
@@ -149,6 +198,31 @@ class ComfyToolsTests(unittest.TestCase):
         ticket = json.loads((Path(self.temp.name) / "comfy-jobs" /
                              (receipt["job_id"] + ".json")).read_text())
         self.assertEqual(ticket["state"], "complete")
+
+    def test_lost_submit_response_keeps_host_prompt_id_for_reconciliation(self):
+        def request(cfg, route, payload=None, image=False):
+            if route.startswith("/object_info/"):
+                return {"CheckpointLoaderSimple": {"input": {"required": {
+                    "ckpt_name": [["dreamshaper_8.safetensors"]]}}}}
+            if route == "/queue":
+                return {"queue_running": [], "queue_pending": []}
+            if route == "/prompt":
+                raise TimeoutError("response missing")
+            raise AssertionError(route)
+
+        with mock.patch.object(comfy_tools, "_request", side_effect=request):
+            with self.assertRaisesRegex(RuntimeError, "inspect Jarvis job"):
+                comfy_tools.submit(self.cfg, "basic_sd15", "a cyan orb")
+        tickets = list((Path(self.temp.name) / "comfy-jobs").glob("*.json"))
+        self.assertEqual(len(tickets), 1)
+        ticket = json.loads(tickets[0].read_text(encoding="utf-8"))
+        self.assertEqual(ticket["state"], "submission_uncertain")
+        self.assertEqual(ticket["prompt_id"], ticket["job_id"])
+        self.assertEqual(ticket["submission_error_type"], "TimeoutError")
+        with mock.patch.object(comfy_tools, "_request", return_value={}):
+            waiting = comfy_tools.wait(self.cfg, ticket["job_id"], 0)
+        self.assertEqual(waiting["state"], "not_finished_or_history_unavailable")
+        self.assertEqual(waiting["prompt_id"], ticket["job_id"])
 
 
 if __name__ == "__main__":
