@@ -294,7 +294,7 @@ class Store:
     def create_assistant_task(self, request, scope, active_model):
         now = time.time()
         return self.run("INSERT INTO assistant_tasks(created, updated, request, scope, active_model, state) "
-                        "VALUES (?,?,?,?,?,'running')", (now, request[:4000], scope[:500], active_model[:100]))
+                        "VALUES (?,?,?,?,?,'running')", (now, now, request[:4000], scope[:500], active_model[:100]))
 
     def checkpoint_assistant_task(self, task_id, state, next_step="", receipt=None, artifacts=None, plan=None):
         if state not in ("running", "inflight", "paused", "needs_reconcile", "needs_input", "completed", "failed"):
@@ -320,6 +320,18 @@ class Store:
     def assistant_tasks(self, limit=20):
         ids = self.rows("SELECT id FROM assistant_tasks ORDER BY updated DESC LIMIT ?", (min(max(int(limit), 1), 100),))
         return [self.assistant_task(row[0]) for row in ids]
+
+    def reconcile_interrupted_assistant_tasks(self):
+        """Quarantine work left active by a prior Jarvis process before any resume."""
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE assistant_tasks SET updated=?, state='needs_reconcile', "
+                "next_step='Inspect the last target and receipt; do not replay an uncertain operation' "
+                "WHERE state IN ('running', 'inflight')",
+                (time.time(),),
+            )
+            self.db.commit()
+            return cur.rowcount
 
     # --- recall: keyword search over everything Jarvis has kept ---------------------------
     @staticmethod

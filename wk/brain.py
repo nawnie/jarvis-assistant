@@ -153,6 +153,7 @@ class Engine(QObject):
             raise RuntimeError("Another Jarvis Assistant is already running - only one may run at a time")
         self.cfg = config.load()
         self.store = Store(config.DB_PATH)
+        self.store.reconcile_interrupted_assistant_tasks()
         self.llm = LocalLLM(self.cfg)
         self.folders = sensors.FolderWatcher()
         sensors.remember_names_in(config.DATA_DIR / "app_names.json")
@@ -161,6 +162,7 @@ class Engine(QObject):
         self.model_event.connect(self._on_model_event)
         self.models = ModelManager(self.cfg, config.DATA_DIR / "model-server.log", self.model_event.emit)
         self.last_route_receipt = None
+        self.last_assistant_task_id = None
         self.llm.alias_fn = self.models.alias
         threading.Thread(target=self.models.startup, daemon=True, name="jarvis-model-startup").start()
         # projects Jarvis works on while you're away
@@ -560,6 +562,37 @@ class Engine(QObject):
         """Store your message, ask the model (with memory + recent activity), store and return the reply.
         Blocking - call it off the GUI thread."""
         self.store.add_chat("user", text)
+        resume_task_id = None
+        effective_text = text
+        if text.strip().lower() == "/tasks":
+            reply = agent_loop.task_status_text(self.store)
+            self.store.add_chat("assistant", reply)
+            self.data_changed.emit("chat")
+            return reply
+        if text.strip().lower().startswith("/resume"):
+            parts = text.strip().split()
+            try:
+                if len(parts) != 2 or not parts[1].isdigit():
+                    raise ValueError("Use /resume followed by a task number")
+                resume_task_id = int(parts[1])
+                task = self.store.assistant_task(resume_task_id)
+                if task is None:
+                    raise ValueError("That assistant task does not exist")
+                if task["state"] == "needs_reconcile" or any(
+                        step.get("mutation") for step in task["artifacts"]):
+                    if task["state"] != "needs_reconcile":
+                        self.store.checkpoint_assistant_task(
+                            resume_task_id, "needs_reconcile",
+                            "Inspect completed mutation artifacts before any continuation")
+                    raise ValueError("This task needs inspection of its recorded operation; no write was replayed")
+                if task["state"] not in {"paused", "needs_input"}:
+                    raise ValueError(f"Task #{resume_task_id} is {task['state']}; it cannot resume now")
+                effective_text = task["request"]
+            except ValueError as exc:
+                reply = str(exc)
+                self.store.add_chat("assistant", reply)
+                self.data_changed.emit("chat")
+                return reply
         commands = {"/status": lambda: self_knowledge.status_text(self),
                     "/objectives": lambda: self_knowledge.objectives_text(self),
                     "/processes": resource_tools.processes_text,
@@ -608,7 +641,8 @@ class Engine(QObject):
             return reply
         # feature commands (/gpu /actions /do /fix /wrapup /autoplay) - wk/feature_pages.FeatureHub.command
         feature_hook = getattr(self, "command_hook", None)
-        feature_reply = feature_hook(text) if feature_hook and text.strip().startswith("/") else None
+        feature_reply = (feature_hook(text) if feature_hook and text.strip().startswith("/")
+                         and resume_task_id is None else None)
         if feature_reply is not None:
             self.store.add_chat("assistant", feature_reply)
             self.data_changed.emit("chat")
@@ -643,7 +677,7 @@ class Engine(QObject):
         system, identity_diagnostic = assistant_context.system_context(self, tool_registry.describe(self.cfg))
         system += "\n\n" + self_knowledge.capability_text(self)
         system += "\n\n" + behavior.reply_instructions(self.cfg)
-        system += "\n\nReviewed memory context:\n" + behavior.memory_context(self.store, text, self.cfg)
+        system += "\n\nReviewed memory context:\n" + behavior.memory_context(self.store, effective_text, self.cfg)
         observations = []
         if include_activity:
             minutes = behavior.bounded_int(self.cfg, "memory_activity_minutes", 5, 240)
@@ -666,7 +700,11 @@ class Engine(QObject):
                              "\n\n".join(observations)})
         messages += [{"role": r, "content": t} for r, t in self.store.chat_tail(
             behavior.bounded_int(self.cfg, "memory_chat_messages", 4, 40))]
-        route = task_routing.choose(text, self.cfg)
+        if resume_task_id is not None:
+            messages[-1] = {"role": "user", "content":
+                            f"Resume assistant task #{resume_task_id}. Original request: {effective_text}. "
+                            "Prior read-only steps may be repeated; do not claim an unverified action."}
+        route = task_routing.choose(effective_text, self.cfg)
         models = getattr(self, "models", None)
         evidence = {}
         catalog = config.DATA_DIR / "model_benchmark_receipts.json"
@@ -677,7 +715,7 @@ class Engine(QObject):
                     verified_profile, verified_runtime = task_routing.verified_identity(profile, self.cfg)
                     evidence[profile_name] = task_routing.benchmark_catalog_evidence(
                         verified_profile, verified_runtime, catalog, route.tier)
-        route = task_routing.choose(text, self.cfg, evidence)
+        route = task_routing.choose(effective_text, self.cfg, evidence)
         prior_profile = models.active if models is not None else "small"
         focused = False
         try:
@@ -708,11 +746,19 @@ class Engine(QObject):
             }
             if model_verified is False:
                 raise RuntimeError("Jarvis-owned model identity is unverified")
-            reply, action_receipts = agent_loop.run(self, messages, text, max_tokens=output_tokens)
+            self.last_assistant_task_id = None
+            reply, action_receipts = agent_loop.run(
+                self, messages, effective_text, max_tokens=output_tokens,
+                task_id=resume_task_id)
             reply += agent_loop.receipt_text(action_receipts)
+            completed_task_id = getattr(self, "last_assistant_task_id", None)
+            if completed_task_id is not None:
+                reply += f"\n\nAssistant task: #{completed_task_id}. Use /tasks for its recorded state."
             if route.preferred_profile != active_profile:
                 reply += ("\n\nModel route: preferred " + route.preferred_profile +
                           "; used the active " + active_profile + " profile. Exact benchmark evidence is unknown.")
+        except agent_loop.DurableTaskError as exc:
+            reply = f"Task checkpoint unavailable ({exc}). Inspect /tasks before retrying; no operation was replayed."
         except Exception as exc:
             reply = f"Local model unreachable ({exc}). It may be switching models - try again in a minute."
         finally:
@@ -723,7 +769,7 @@ class Engine(QObject):
         self.store.add_chat("assistant", reply)
         self.data_changed.emit("chat")
         if self.cfg.get("memory_capture_mode", "suggest") == "suggest" and not text.strip().startswith("/"):
-            run_async(lambda: memory_intake.propose(self.llm, self.store, text, self.cfg),
+            run_async(lambda: memory_intake.propose(self.llm, self.store, effective_text, self.cfg),
                       lambda added: self.data_changed.emit("memory") if added is True else None)
         return reply
 
