@@ -66,7 +66,7 @@ def run(engine, messages: list[dict], question: str, max_tokens: int = 900,
         return llm.chat(messages, max_tokens=max_tokens), []
     if not engine.cfg.get("pc_actions_enabled", True):
         return llm.chat(messages, max_tokens=max_tokens), []
-    offered = tool_registry.selected(question, engine.cfg)
+    offered = tool_registry.selected(question, engine.cfg, engine)
     conversation = list(messages)
     receipts: list[dict] = []
     seen_failures: set[str] = set()

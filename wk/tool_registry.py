@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import comfy_tools, mcp_client, path_policy, pc_tools, phone_tools, project_tests, wiki_tools
+from . import comfy_tools, mcp_client, path_policy, pc_tools, phone_tools, project_tests, vision_tools, wiki_tools
 
 MAX_TEXT_BYTES = 128_000
 MAX_OUTPUT_CHARS = 12_000
@@ -290,7 +290,7 @@ for _name in ("list_folder", "find_files", "move", "copy", "rename", "make_folde
                         _adapt(), _name not in ("list_folder", "find_files", "disk_space"))
 
 
-def selected(question: str, cfg: dict | None = None) -> dict[str, Tool]:
+def selected(question: str, cfg: dict | None = None, engine=None) -> dict[str, Tool]:
     """Small initial schema set; all turns can discover further tools."""
     names = ["file_info", "read_file", "search_text", "patch_text", "list_folder", "find_files"]
     lower = (question or "").lower()
@@ -319,6 +319,17 @@ def selected(question: str, cfg: dict | None = None) -> dict[str, Tool]:
                               wiki_tools.post, True),
         })
     cfg = cfg or {}
+    if engine is not None and getattr(engine, "eyes", None) is not None and cfg.get("vision_enabled", True):
+        if re.search(r"\b(image|picture|photo|screenshot)\b", lower):
+            offered["inspect_image"] = Tool(
+                "inspect_image", "Inspect one owner-selected local image with Jarvis's local vision model.",
+                _params({"path": STR, "question": STR}, ("path", "question")),
+                lambda path, question: vision_tools.inspect_image(engine, path, question))
+        if re.search(r"\b(screen|screenshot|display)\b", lower):
+            offered["inspect_screen"] = Tool(
+                "inspect_screen", "Inspect only the 960x600 screen area around the pointer, subject to private-window checks.",
+                _params({"question": STR}, ("question",)),
+                lambda question: vision_tools.inspect_screen(engine, question))
     try:
         if not path_policy.owner_roots()["write_roots"]:
             for unavailable in ("patch_text", "move", "copy", "rename", "make_folder", "delete", "extract"):

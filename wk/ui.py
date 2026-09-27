@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QApplication,
     QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
-from . import captions, config, crash_doctor, feature_pages, hud, media, pc_tools, phone_alerts, pointer, popup, semantic, sensors, task_blueprint, vision, voice, voice_actor
+from . import captions, comfy_tools, config, crash_doctor, feature_pages, hud, media, pc_tools, phone_alerts, pointer, popup, semantic, sensors, task_blueprint, vision, voice, voice_actor
 from . import hotkeys
 from .models import model_control_allowed
 from .brain import SYSTEM_PERSONA, Engine, run_async
@@ -408,6 +408,7 @@ class MainWindow(QMainWindow):
         # so the Qwen eyes hand their VRAM back (unused / a game needs it / the 27B was loaded), and
         # stopped when Jarvis quits. Never more than two models at once.
         self.eyes = vision.Eyes(engine)
+        engine.eyes = self.eyes  # ordinary chat and quick-ask share one owned vision server
         self._eyes_timer = QTimer(self, interval=60_000,
                                   timeout=lambda: run_async(self.eyes.unload_if_idle, self._eyes_unloaded))
         self._eyes_timer.start()
@@ -1773,6 +1774,7 @@ class MainWindow(QMainWindow):
                            ("llm_autostart_server", "Start Jarvis's dedicated local model when the app opens"),
                            ("away_model_enabled", "While I'm away, switch to Bonsai 2 27B"),
                            ("away_free_comfyui", "...and ask an idle ComfyUI to unload its models to make room"),
+                           ("comfy_generation_enabled", "Allow chat to generate small images with local ComfyUI"),
                            ("task_focus_27b_enabled", "Allow a complex chat task to lease Jarvis-owned 27B once (GPU checks apply)"),
                            ("projects_enabled", "While I'm away, work on my active projects")):
             if key in sections:
@@ -1820,6 +1822,17 @@ class MainWindow(QMainWindow):
         self.s_trigger.addItem("Ctrl + Alt + click", "ctrl+alt")
         self.s_trigger.setCurrentIndex(max(0, self.s_trigger.findData(cfg["explain_trigger"])))
         form.addRow("Explain trigger", self.s_trigger)
+        form.addRow(QLabel("LOCAL COMFY IMAGE WORKFLOW", objectName="paneltitle"))
+        self.s_comfy_url = QLineEdit(cfg.get("comfyui_url", "http://127.0.0.1:8188"))
+        self.s_comfy_url.setToolTip("Loopback ComfyUI address; Jarvis will not launch the service")
+        form.addRow("ComfyUI URL", self.s_comfy_url)
+        catalog = cfg.get("comfy_workflows") if isinstance(cfg.get("comfy_workflows"), dict) else {}
+        basic = catalog.get("basic_sd15") if isinstance(catalog.get("basic_sd15"), dict) else {}
+        self.s_comfy_checkpoint = QLineEdit(basic.get("checkpoint", ""),
+                                            placeholderText="installed checkpoint filename.safetensors")
+        self.s_comfy_checkpoint.setToolTip("The installed Comfy checkpoint for the basic_sd15 workflow")
+        form.addRow("Image checkpoint", self.s_comfy_checkpoint)
+        form.addRow("", QLabel("Saving this does not start the local model or ComfyUI."))
         self.s_autostart = QCheckBox("Start Jarvis Assistant when Windows starts (in the tray)", checked=bool(cfg["autostart"]))
         form.addRow("", self.s_autostart)
         lay.addLayout(form)
@@ -1839,6 +1852,10 @@ class MainWindow(QMainWindow):
         self.s_url.setText(cfg["llm_base_url"])
         self.s_model.setText(cfg["llm_model"])
         self.s_explain.setChecked(bool(cfg["explain_on_click"]))
+        self.s_comfy_url.setText(cfg.get("comfyui_url", "http://127.0.0.1:8188"))
+        catalog = cfg.get("comfy_workflows") if isinstance(cfg.get("comfy_workflows"), dict) else {}
+        basic = catalog.get("basic_sd15") if isinstance(catalog.get("basic_sd15"), dict) else {}
+        self.s_comfy_checkpoint.setText(basic.get("checkpoint", ""))
 
     def _save_settings(self):
         cfg = dict(self.engine.cfg)
@@ -1853,6 +1870,21 @@ class MainWindow(QMainWindow):
         cfg["llm_model"] = self.s_model.text().strip()
         cfg["explain_on_click"] = self.s_explain.isChecked()
         cfg["explain_trigger"] = self.s_trigger.currentData()
+        cfg["comfyui_url"] = self.s_comfy_url.text().strip()
+        catalog = cfg.get("comfy_workflows")
+        workflows = dict(catalog) if isinstance(catalog, dict) else {}
+        checkpoint = self.s_comfy_checkpoint.text().strip()
+        if checkpoint:
+            workflows["basic_sd15"] = {"checkpoint": checkpoint}
+        else:
+            workflows.pop("basic_sd15", None)
+        cfg["comfy_workflows"] = workflows
+        if cfg.get("comfy_generation_enabled"):
+            try:
+                comfy_tools.validate_owner_settings(cfg)
+            except ValueError as error:
+                QMessageBox.warning(self, "Comfy workflow settings", str(error))
+                return
         if cfg["autostart"] != self.s_autostart.isChecked():
             cfg["autostart"] = self.s_autostart.isChecked()
             set_autostart(cfg["autostart"])

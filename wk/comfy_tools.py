@@ -61,6 +61,13 @@ def list_workflows(cfg: dict) -> dict:
     return {"workflows": sorted(_workflows(cfg))}
 
 
+def validate_owner_settings(cfg: dict, workflow_id: str = "basic_sd15") -> None:
+    """Validate the saved opt-in before the Settings form enables this workflow."""
+    _base(cfg)
+    if workflow_id not in _workflows(cfg):
+        raise ValueError("select an installed .safetensors checkpoint filename")
+
+
 def _base(cfg: dict) -> str:
     value = cfg.get("comfyui_url")
     parsed = urlparse(value) if isinstance(value, str) else None

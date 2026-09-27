@@ -46,6 +46,16 @@ class ComfyToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "workflow"):
             comfy_tools.submit(self.cfg, "unknown", "a cyan orb")
 
+    def test_owner_settings_require_loopback_and_installed_filename(self):
+        comfy_tools.validate_owner_settings(self.cfg)
+        bad_url = {**self.cfg, "comfyui_url": "http://example.com:8188"}
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            comfy_tools.validate_owner_settings(bad_url)
+        bad_checkpoint = {**self.cfg, "comfy_workflows": {
+            "basic_sd15": {"checkpoint": "..\\outside.safetensors"}}}
+        with self.assertRaisesRegex(ValueError, "checkpoint"):
+            comfy_tools.validate_owner_settings(bad_checkpoint)
+
     def test_busy_queue_does_not_submit(self):
         with mock.patch.object(comfy_tools, "_request", side_effect=[
                 {"CheckpointLoaderSimple": {"input": {"required": {

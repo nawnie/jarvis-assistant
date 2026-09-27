@@ -7,8 +7,9 @@ characters. A job receipt is written before submission. `comfy_submit`
 returns a job ID, and `comfy_wait` saves and hashes the PNG only after Comfy
 history reports success. A submitted or pending job is not a finished image.
 
-The feature is off until the owner adds an installed checkpoint name to
-`data/config.json` and enables it, for example:
+The feature is off until the owner enters a checkpoint filename in Settings
+and enables the local Comfy checkbox. The same settings can be added to
+`data/config.json`, for example:
 
 ```json
 {
