@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import struct
 import threading
 import time
@@ -18,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from . import config, sensors
+from . import config, gpu_coordination, sensors
 
 MAX_JSON_BYTES = 2_000_000
 MAX_IMAGE_BYTES = 16_000_000
@@ -88,16 +89,39 @@ def _base(cfg: dict) -> str:
 
 
 def _request(cfg: dict, route: str, payload: dict | None = None,
-             image: bool = False) -> dict | bytes:
+             image: bool = False, timeout: float = 20) -> dict | bytes:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = Request(_base(cfg) + route, data=data,
                       headers={"Content-Type": "application/json"} if data else {})
-    with _opener.open(request, timeout=20) as response:
+    with _opener.open(request, timeout=timeout) as response:
         limit = MAX_IMAGE_BYTES if image else MAX_JSON_BYTES
         raw = response.read(limit + 1)
     if len(raw) > limit:
         raise ValueError("ComfyUI response exceeded the local size limit")
     return raw if image else json.loads(raw.decode("utf-8"))
+
+
+def queue_activity(cfg: dict) -> str:
+    """Return idle, busy, offline, unconfigured, or unknown for the configured local Comfy port."""
+    try:
+        parsed = urlparse(_base(cfg))
+    except (TypeError, ValueError):
+        return "unconfigured"
+    try:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=0.5):
+            pass
+    except ConnectionRefusedError:
+        return "offline"
+    except OSError:
+        return "unknown"
+    try:
+        queue = _request(cfg, "/queue", timeout=2)
+        if not isinstance(queue, dict) or not isinstance(queue.get("queue_running"), list) or \
+                not isinstance(queue.get("queue_pending"), list):
+            return "unknown"
+        return "busy" if queue["queue_running"] or queue["queue_pending"] else "idle"
+    except Exception:
+        return "unknown"
 
 
 def _graph(checkpoint: str, prompt: str, prefix: str) -> dict:
@@ -179,6 +203,12 @@ def _read_ticket(job_id: str) -> dict:
 
 
 def submit(cfg: dict, workflow_id: str, prompt: str,
+           cancel: threading.Event | None = None, guard_seconds: int = 100) -> dict:
+    with gpu_coordination.hold():
+        return _submit_locked(cfg, workflow_id, prompt, cancel, guard_seconds)
+
+
+def _submit_locked(cfg: dict, workflow_id: str, prompt: str,
            cancel: threading.Event | None = None, guard_seconds: int = 100) -> dict:
     workflows = _workflows(cfg)
     if workflow_id not in workflows:

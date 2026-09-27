@@ -191,6 +191,14 @@ def test_eyes_wont_load_when_the_gpu_is_full(tmp_path, monkeypatch):
     assert not ok and "GPU only has" in reason
 
 
+def test_eyes_wont_start_while_comfy_has_a_job(tmp_path, monkeypatch):
+    from wk import vision
+    eyes, _, _ = _eyes(tmp_path, monkeypatch)
+    monkeypatch.setattr(vision.comfy_tools, "queue_activity", lambda cfg: "busy")
+    ok, reason = eyes.ensure_ready()
+    assert not ok and "ComfyUI queue is busy" in reason
+
+
 def test_eyes_off_switch_and_missing_files(tmp_path, monkeypatch):
     eyes, _, _ = _eyes(tmp_path, monkeypatch, vision_enabled=False)
     assert eyes.unavailable_reason() == "vision is switched off"

@@ -43,7 +43,7 @@ from pathlib import Path
 
 import psutil
 
-from . import config, sensors
+from . import comfy_tools, config, gpu_coordination, sensors
 from .llm import LocalLLM
 from .models import model_control_allowed
 
@@ -180,39 +180,49 @@ class Eyes:
         if self.mode() == "big":
             return True, ""
         with self.lock:
-            reason = self.unavailable_reason()
-            if reason:
-                return False, reason
-            proc = self._owned()
-            if proc is None and self._port_in_use():
-                # Shawn Core's launch rule: never take over or kill whatever holds the reserved port
-                return False, f"port {self._port()} is being used by another program"
-            if proc is None:
-                free = self._free_vram_mb()
-                need = int(self.get("vision_min_free_mb"))
-                if free is not None and free < need:
-                    return False, (f"the GPU only has {free / 1024:.1f} GB free "
-                                   f"(vision needs about {need / 1024:.1f} GB)")
-                proc = self._launch()
-                if proc is None:
-                    return False, "the vision server could not be started (see data\\eyes-server.log)"
-            # this loop waits for the model to finish loading (a cold start takes about 5 s)
-            self.starting = True
             try:
-                deadline = time.time() + LOAD_TIMEOUT
-                while time.time() < deadline:
-                    if self._healthy():
-                        self.qwen.cfg["llm_base_url"] = self._url()
-                        self.ready = True
-                        return True, ""
-                    if not proc.is_running():
-                        self.owner_path.unlink(missing_ok=True)
-                        self.ready = False
-                        return False, "the vision server stopped while loading (see data\\eyes-server.log)"
-                    time.sleep(0.25)
-                return False, "the vision model took too long to load"
-            finally:
-                self.starting = False
+                with gpu_coordination.hold():
+                    return self._ensure_qwen_with_gpu_lease()
+            except TimeoutError:
+                return False, "another Jarvis GPU operation is in progress"
+
+    def _ensure_qwen_with_gpu_lease(self):
+        reason = self.unavailable_reason()
+        if reason:
+            return False, reason
+        proc = self._owned()
+        if proc is None and self._port_in_use():
+            # Shawn Core's launch rule: never take over or kill whatever holds the reserved port
+            return False, f"port {self._port()} is being used by another program"
+        if proc is None:
+            activity = comfy_tools.queue_activity(self.engine.cfg)
+            if activity in ("busy", "unknown"):
+                return False, f"ComfyUI queue is {activity}; vision will wait"
+            free = self._free_vram_mb()
+            need = int(self.get("vision_min_free_mb"))
+            if free is not None and free < need:
+                return False, (f"the GPU only has {free / 1024:.1f} GB free "
+                               f"(vision needs about {need / 1024:.1f} GB)")
+            proc = self._launch()
+            if proc is None:
+                return False, "the vision server could not be started (see data\\eyes-server.log)"
+        # this loop waits for the model to finish loading (a cold start takes about 5 s)
+        self.starting = True
+        try:
+            deadline = time.time() + LOAD_TIMEOUT
+            while time.time() < deadline:
+                if self._healthy():
+                    self.qwen.cfg["llm_base_url"] = self._url()
+                    self.ready = True
+                    return True, ""
+                if not proc.is_running():
+                    self.owner_path.unlink(missing_ok=True)
+                    self.ready = False
+                    return False, "the vision server stopped while loading (see data\\eyes-server.log)"
+                time.sleep(0.25)
+            return False, "the vision model took too long to load"
+        finally:
+            self.starting = False
 
     def _launch(self):
         cfg = self.engine.cfg

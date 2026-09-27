@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 import psutil
 
-from . import sensors
+from . import comfy_tools, gpu_coordination, sensors
 
 # Bonsai 2 27B's vision tower (the Qwen3.8-27B projector, 600 MB; the same file llama chat uses from
 # F:\Ai_Models\Chat Models\vision-projectors - they are hardlinks). Loaded with the 27B only.
@@ -394,12 +394,21 @@ class ModelManager:
                 return
             self.busy = True
         try:
-            started = self._start("small")
+            with gpu_coordination.hold():
+                activity = comfy_tools.queue_activity(self.cfg)
+                if activity in ("busy", "unknown"):
+                    self.on_event(f"Deferred Bonsai 8B: ComfyUI queue is {activity}")
+                    self._small_retry_after = max(self._small_retry_after, time.monotonic() + 15)
+                    return
+                started = self._start("small")
             if started:
                 self.active = "small"
                 self.on_event("Started Bonsai 8B after the GPU stayed below its idle threshold")
             else:
                 self._small_retry_after = max(self._small_retry_after, time.monotonic() + 60)
+        except TimeoutError:
+            self.on_event("Deferred Bonsai 8B: another Jarvis GPU operation is in progress")
+            self._small_retry_after = max(self._small_retry_after, time.monotonic() + 15)
         finally:
             self.busy = False
 
@@ -492,39 +501,51 @@ class ModelManager:
             self.busy = True
             self.pending_profile = want
         try:
-            if self._port_in_use() and not self.our_server_pids():
-                self.pending_profile = None
-                self.on_event(f"Jarvis model port {self._port()} belongs to another service; model switch deferred")
-                return
-            if want == "big" and not self.room_for_big():
-                self._pending_retry_after = max(self._pending_retry_after, time.monotonic() + 60)
-                return
-            self._stop_ours()
-            if self._start(want):
-                self.active = want
-                self.pending_profile = None
-                if manual:
-                    self.on_event("Loaded Bonsai 2 27B (with vision) - it stays until you pick 8B" if want == "big"
-                                  else "Loaded Bonsai 8B")
-                else:
-                    self.on_event("Switched to Bonsai 2 27B for away-mode work" if want == "big"
-                                  else "Welcome back - switched to Bonsai 8B")
-            else:
-                if want == "big":
-                    self._stop_ours()
-                    restored = self._start("small")
-                    self.active = "small"
-                    self.pending_profile = None
-                    self.on_event("Couldn't load Bonsai 2; returned to Bonsai 8B" if restored else
-                                  "Couldn't load Bonsai 2; Bonsai 8B is waiting for safe GPU capacity")
-                else:
-                    self.active = "small"
-                    self._small_retry_after = max(self._small_retry_after, time.monotonic() + 60)
-                    if not Path(self.cfg["llm_server_exe"]).exists() or not Path(self.profile("small")["file"]).exists():
-                        self.pending_profile = None
-                    self.on_event("Bonsai 8B is not loaded; Jarvis will retry when the GPU is clear")
+            with gpu_coordination.hold():
+                self._switch_with_gpu_lease(want, manual)
+        except TimeoutError:
+            self.on_event(f"Deferred Bonsai {'2 27B' if want == 'big' else '8B'}: another Jarvis GPU operation is in progress")
+            self._pending_retry_after = max(self._pending_retry_after, time.monotonic() + 15)
         finally:
             self.busy = False
+
+    def _switch_with_gpu_lease(self, want, manual):
+        if self._port_in_use() and not self.our_server_pids():
+            self.pending_profile = None
+            self.on_event(f"Jarvis model port {self._port()} belongs to another service; model switch deferred")
+            return
+        activity = comfy_tools.queue_activity(self.cfg)
+        if activity in ("busy", "unknown"):
+            self.on_event(f"Deferred Bonsai {'2 27B' if want == 'big' else '8B'}: ComfyUI queue is {activity}")
+            self._pending_retry_after = max(self._pending_retry_after, time.monotonic() + 15)
+            return
+        if want == "big" and not self.room_for_big():
+            self._pending_retry_after = max(self._pending_retry_after, time.monotonic() + 60)
+            return
+        self._stop_ours()
+        if self._start(want):
+            self.active = want
+            self.pending_profile = None
+            if manual:
+                self.on_event("Loaded Bonsai 2 27B (with vision) - it stays until you pick 8B" if want == "big"
+                              else "Loaded Bonsai 8B")
+            else:
+                self.on_event("Switched to Bonsai 2 27B for away-mode work" if want == "big"
+                              else "Welcome back - switched to Bonsai 8B")
+        else:
+            if want == "big":
+                self._stop_ours()
+                restored = self._start("small")
+                self.active = "small"
+                self.pending_profile = None
+                self.on_event("Couldn't load Bonsai 2; returned to Bonsai 8B" if restored else
+                              "Couldn't load Bonsai 2; Bonsai 8B is waiting for safe GPU capacity")
+            else:
+                self.active = "small"
+                self._small_retry_after = max(self._small_retry_after, time.monotonic() + 60)
+                if not Path(self.cfg["llm_server_exe"]).exists() or not Path(self.profile("small")["file"]).exists():
+                    self.pending_profile = None
+                self.on_event("Bonsai 8B is not loaded; Jarvis will retry when the GPU is clear")
 
     def switch_async(self, want, manual=False):
         threading.Thread(target=self.switch, args=(want,), kwargs={"manual": manual}, daemon=True,
