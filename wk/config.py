@@ -136,6 +136,8 @@ DEFAULTS = {
     "away_free_comfyui": True,      # if ComfyUI is idle (empty queue) and holding VRAM, ask it to unload
     "task_focus_27b_enabled": False,  # owner opt-in: complex chat may lease Jarvis-owned 27B for one task
     "comfyui_url": "http://127.0.0.1:8188",  # Shawn Core's reserved ComfyUI address on this host
+    "comfy_generation_enabled": False,  # owner opt-in; only host-defined workflows are callable
+    "comfy_workflows": {},        # id -> {"checkpoint": "installed-name.safetensors"}
     "mcp_servers": {},           # only explicitly named, local server definitions; no Codex credential import
     "projects_enabled": True,       # work on active projects while you're away
     "project_steps_per_session": 8,
@@ -173,6 +175,7 @@ SAFE_UNCONFIGURED_DEFAULTS = {
     "keep_pc_awake": False,
     "away_model_enabled": False,
     "away_free_comfyui": False,
+    "comfy_generation_enabled": False,
     "voice_enabled": False,
     "recall_semantic": False,
     "projects_enabled": False,

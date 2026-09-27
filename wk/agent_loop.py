@@ -145,14 +145,15 @@ def run(engine, messages: list[dict], question: str, max_tokens: int = 900,
                 elif signature in seen_failures:
                     result = {"ok": False, "error": "repeated failed call; inspect arguments or ask for help"}
                 else:
-                    result = tool_registry.execute(name, args, offered, timeout_seconds=remaining)
+                    result = tool_registry.execute(name, args, offered, timeout_seconds=remaining, cancel=cancel)
                 if not result.get("ok"):
                     seen_failures.add(signature)
                 receipt = {"call_id": call_id, "tool": name, "arguments": args,
                            "outcome": result, "protocol": protocol, "time": time.time()}
                 receipts.append(receipt)
                 try:
-                    engine.store.add_event("action", f"{name}: {'ok' if result.get('ok') else 'failed'}")
+                    state = "pending" if result.get("pending") else "ok" if result.get("ok") else "failed"
+                    engine.store.add_event("action", f"{name}: {state}")
                 except Exception:
                     pass
                 serialized = json.dumps(result, ensure_ascii=False, default=str)
@@ -182,6 +183,6 @@ def receipt_text(receipts: list[dict]) -> str:
         outcome = receipt["outcome"]
         result = outcome.get("result", outcome.get("error", ""))
         short = str(result).replace("\n", " ")[:180]
-        status = "done" if outcome.get("ok") else "failed"
+        status = "pending" if outcome.get("pending") else "done" if outcome.get("ok") else "failed"
         lines.append(f"- {receipt['tool']}: {status}; {short}")
     return "\n\n**Action receipts:**\n" + "\n".join(lines)

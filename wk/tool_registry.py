@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import mcp_client, path_policy, pc_tools, phone_tools, project_tests, wiki_tools
+from . import comfy_tools, mcp_client, path_policy, pc_tools, phone_tools, project_tests, wiki_tools
 
 MAX_TEXT_BYTES = 128_000
 MAX_OUTPUT_CHARS = 12_000
@@ -334,6 +334,21 @@ def selected(question: str, cfg: dict | None = None) -> dict[str, Tool]:
                                     _params({"server": STR, "tool": STR, "arguments": OBJ},
                                             ("server", "tool", "arguments")),
                                     lambda server, tool, arguments: mcp_client.call(cfg, server, tool, arguments), True)
+    if comfy_tools.available(cfg) and any(
+            phrase in lower for phrase in ("generate image", "make image", "create image", "generate a picture",
+                                    "draw image", "draw a picture", "comfy", "illustration")):
+        offered["comfy_workflows"] = Tool(
+            "comfy_workflows", "List owner-configured local Comfy image workflow IDs.",
+            _params({}, ()), lambda: comfy_tools.list_workflows(cfg))
+        offered["comfy_submit"] = Tool(
+            "comfy_submit", "Submit one 384x384 image using a listed workflow and text prompt. The host owns all nodes and checkpoint choice; returns a job ID, not an image.",
+            _params({"workflow_id": STR, "prompt": STR}, ("workflow_id", "prompt")),
+            lambda workflow_id, prompt, cancel=None, guard_seconds=100:
+                comfy_tools.submit(cfg, workflow_id, prompt, cancel, guard_seconds), True)
+        offered["comfy_wait"] = Tool(
+            "comfy_wait", "Wait for a Jarvis-submitted Comfy job and save its verified PNG when complete. A queued result is not a generated image.",
+            _params({"job_id": STR, "wait_seconds": INT}, ("job_id",)),
+            lambda job_id, wait_seconds=60, cancel=None: comfy_tools.wait(cfg, job_id, wait_seconds, cancel), True)
     return offered
 
 
@@ -368,10 +383,13 @@ def describe(cfg: dict) -> str:
                          f"health={state.get('state', 'not_tested')}; discover before calling.")
     else:
         lines.append("MCP servers: none explicitly configured in Jarvis; Codex MCP settings are not inherited.")
+    workflows = comfy_tools.list_workflows(cfg)["workflows"]
+    lines.append("Comfy image workflow IDs: " + (", ".join(workflows) if workflows else "none enabled"))
     return "\n".join(lines)
 
 
-def execute(name: str, arguments: dict, allowed: dict[str, Tool], timeout_seconds: int | None = None) -> dict:
+def execute(name: str, arguments: dict, allowed: dict[str, Tool], timeout_seconds: int | None = None,
+            cancel=None) -> dict:
     if name not in allowed:
         return {"ok": False, "error": f"tool {name!r} was not offered for this turn"}
     tool = allowed[name]
@@ -395,20 +413,36 @@ def execute(name: str, arguments: dict, allowed: dict[str, Tool], timeout_second
         call_args = dict(arguments)
         if name == "run_command" and timeout_seconds is not None:
             call_args["timeout_seconds"] = min(int(call_args.get("timeout_seconds", 30)), timeout_seconds)
+        if name == "comfy_wait":
+            call_args["cancel"] = cancel
+            if timeout_seconds is not None:
+                call_args["wait_seconds"] = min(int(call_args.get("wait_seconds", 60)), timeout_seconds)
+        if name == "comfy_submit":
+            if timeout_seconds is not None and timeout_seconds < 90:
+                raise TimeoutError("insufficient agent time for sustained GPU preflight and submission")
+            call_args["cancel"] = cancel
+            if timeout_seconds is not None:
+                call_args["guard_seconds"] = min(100, timeout_seconds - 30)
         result = tool.call(**call_args)
         mcp_error = bool(name == "mcp_call" and isinstance(result, dict) and
                          isinstance(result.get("result"), dict) and result["result"].get("is_error"))
         command_error = bool(name in {"run_command", "run_jarvis_tests", "run_registered_test"} and isinstance(result, dict) and
                              (result.get("state") != "completed" or result.get("exit_code") != 0))
+        comfy_error = bool(name == "comfy_wait" and isinstance(result, dict) and
+                           result.get("state") == "failed")
         legacy_error = bool(isinstance(result, str) and
                             (re.match(r"^exit code (?!0\b)\d+", result.lower()) or
                              result.lower().startswith(("failed:", "stopped:", "not a folder:",
                                                        "not extracted:", "not a zip file:",
                                                        "nothing found", "moved nothing", "copied nothing",
                                                        "deleted nothing", "could not delete"))))
-        failed = mcp_error or command_error or legacy_error
-        _last_results[name] = {"state": "failed" if failed else "healthy", "tested_at": time.time()}
-        return {"ok": not failed, "tool": name, "result": result,
+        failed = mcp_error or command_error or comfy_error or legacy_error
+        pending = bool(name == "comfy_wait" and isinstance(result, dict) and
+                       result.get("state") in {"not_finished_or_history_unavailable",
+                                               "wait_cancelled_job_not_cancelled"})
+        _last_results[name] = {"state": "failed" if failed else "pending" if pending else "healthy",
+                               "tested_at": time.time()}
+        return {"ok": not failed, "pending": pending, "tool": name, "result": result,
                 "elapsed_ms": round((time.monotonic() - started) * 1000)}
     except Exception as exc:
         _last_results[name] = {"state": "failed", "tested_at": time.time()}
