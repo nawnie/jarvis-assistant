@@ -1,0 +1,20 @@
+{
+  "name": "Skyrim SE: skip Helgen via console",
+  "notes": "Start at Skyrim's MAIN MENU with the console key on ` (default US layout). Opens the console, runs 'coc riverwood', waits for the load, then opens character creation with 'showracemenu'. This skips the Unbound quest entirely (Alternate Start is the cleaner mod route for a full playthrough). Untested live as of 2026-09-25: run it in dry run first and check the log.",
+  "steps": [
+    {"do": "say", "text": "Opening the console at the main menu."},
+    {"do": "press", "key": "`", "hold_ms": 60},
+    {"do": "wait", "ms": 600},
+    {"do": "type", "text": "coc riverwood"},
+    {"do": "press", "key": "enter", "hold_ms": 60},
+    {"do": "say", "text": "Loading Riverwood - this takes a little while."},
+    {"do": "wait", "ms": 25000},
+    {"do": "press", "key": "`", "hold_ms": 60},
+    {"do": "wait", "ms": 600},
+    {"do": "type", "text": "showracemenu"},
+    {"do": "press", "key": "enter", "hold_ms": 60},
+    {"do": "wait", "ms": 400},
+    {"do": "press", "key": "`", "hold_ms": 60},
+    {"do": "say", "text": "Character creation is open - over to you."}
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Demo: look around and step forward",
+  "notes": "A harmless pipeline check for any 3D game: pans the camera left and right, walks forward a moment, jumps once. Try it in dry run first (nothing is sent), then with real input while standing somewhere safe.",
+  "steps": [
+    {"do": "say", "text": "Taking the controls - touch the mouse or keyboard to take them back."},
+    {"do": "wait", "ms": 1000},
+    {"do": "look", "dx": -400, "dy": 0, "ms": 800},
+    {"do": "look", "dx": 800, "dy": 0, "ms": 1400},
+    {"do": "look", "dx": -400, "dy": 0, "ms": 800},
+    {"do": "say", "text": "Walking forward."},
+    {"do": "hold", "key": "w", "ms": 1500},
+    {"do": "press", "key": "space", "hold_ms": 80},
+    {"do": "wait", "ms": 800},
+    {"do": "say", "text": "Done - controls are yours."}
+  ]
+}

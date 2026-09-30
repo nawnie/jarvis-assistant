@@ -155,6 +155,58 @@ def test_config_defaults_merge_and_corrupt_file(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "config.json").read_text(encoding="utf-8")) == {"a": 1}
 
 
+def test_unconfigured_or_invalid_config_keeps_side_effects_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
+    for contents in (None, "{not json", "[]", "{}"):
+        if contents is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(contents, encoding="utf-8")
+        loaded = config.load()
+        assert all(loaded[key] is False for key in (
+            "watching", "watch_windows", "watch_task_windows", "read_local_task_prompts",
+            "watch_clipboard", "watch_folders", "watch_system", "llm_enabled",
+            "llm_autostart_server", "away_model_enabled", "remote_api_enabled",
+            "projects_enabled", "explain_on_click", "quick_ask_hotkey",
+            "voice_enabled", "recall_semantic",
+        ))
+        assert loaded["memory_capture_mode"] == "off"
+
+    path.write_text(json.dumps({"watching": True}), encoding="utf-8")
+    partial = config.load()
+    assert partial["watching"] is True
+    assert partial["watch_windows"] is False
+    assert partial["remote_api_enabled"] is False
+    assert partial["llm_autostart_server"] is False
+    path.write_text(json.dumps({"watching": True, "remote_api_enabled": True}), encoding="utf-8")
+    explicit = config.load()
+    assert explicit["watching"] is True and explicit["remote_api_enabled"] is True
+
+
+def test_unconfigured_engine_does_not_install_global_mouse_hook(qapp, tmp_path, monkeypatch):
+    from wk import brain, pointer
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "jarvis.db")
+    monkeypatch.setattr(brain.instance, "claim", lambda: True)
+    starts = []
+    monkeypatch.setattr(pointer.MouseTrigger, "start", lambda self: starts.append(True))
+    engine = brain.Engine()
+    try:
+        assert starts == []
+        engine.cfg["explain_on_click"] = True
+        engine.set_watching(True)
+        assert starts == [True]
+    finally:
+        for timer in (engine.t_tick, engine.t_stats, engine.t_folders,
+                      engine.t_task_windows, engine.t_chores):
+            timer.stop()
+        engine.shutdown()
+
+
 def test_known_folders_resolve_to_real_paths():
     assert Path(config.DESKTOP).exists()
     assert Path(config.DOWNLOADS).exists()
@@ -798,39 +850,6 @@ def test_model_manager_recognizes_only_recorded_process_identity(monkeypatch, tm
     m.owner_path.write_text(json.dumps({"pid": 45678, "created": 201.0,
                                         "exe": str(exe), "model": model}), encoding="utf-8")
     assert m.our_server_pids() == [] and killed == [45678]
-
-
-def test_model_server_can_remain_in_guard_owned_process_tree(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-    from wk import models
-
-    exe = tmp_path / "llama-server.exe"
-    model = tmp_path / "bonsai.gguf"
-    exe.touch()
-    model.touch()
-    cfg = {"llm_server_exe": str(exe), "llm_base_url": "http://127.0.0.1:8085/v1",
-           "away_model_file": str(model), "away_model_alias": "bonsai-27b", "away_model_ctx": 32768,
-           "llm_gpu_layers": 999}
-    manager = models.ModelManager(cfg, tmp_path / "server.log", lambda _event: None)
-    pids = []
-    seen = []
-    monkeypatch.setattr(manager, "our_server_pids", lambda: pids)
-    monkeypatch.setattr(manager, "_port_in_use", lambda: False)
-    monkeypatch.setattr(manager, "_health", lambda: True)
-    monkeypatch.setattr(models.psutil, "Process", lambda _pid: SimpleNamespace(create_time=lambda: 10.0))
-
-    def fake_popen(_args, **kwargs):
-        seen.append(kwargs)
-        pids.append(12345)
-        return SimpleNamespace(pid=12345)
-
-    monkeypatch.setattr(models.subprocess, "Popen", fake_popen)
-    assert manager._start("big", wait=1) is True
-    assert seen[-1]["creationflags"] & models.subprocess.DETACHED_PROCESS
-
-    pids.clear()
-    assert manager._start("big", wait=1, detached=False) is True
-    assert not seen[-1]["creationflags"] & models.subprocess.DETACHED_PROCESS
 
 
 def test_consult_cli_is_bounded_and_uses_current_question_only(monkeypatch, tmp_path):

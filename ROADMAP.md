@@ -1,40 +1,42 @@
-# Jarvis Assistant MVP Roadmap
+# Jarvis Assistant release gates
 
-**Last reviewed:** 2026-09-25
+**Last reviewed:** 2026-09-30. This is source-available software under the repository's noncommercial license. The current implementation has meaningful local tests, but a clean installation and all user-visible workflows have not been accepted.
 
-**Status:** MVP hardening in progress. The Windows app, setup guide, and deterministic checks are present. End-to-end model-backed operation on a clean user installation has not been demonstrated.
+## Current workstation snapshot
 
-## Current checkpoint
+This is a point-in-time check of the owner's Windows PC on 2026-09-30, kept separate from public-source acceptance:
 
-- `/status` now probes the configured local model endpoint and reports a credential-free failure reason. Its output includes local source, settings, and database paths; redact it before sharing. The change has unit coverage; the running Jarvis process has not been restarted to load it yet.
-- During the 2026-09-24 review, Jarvis's configured local model endpoint had no server listening. Model-backed chat through the Jarvis app therefore remains unverified.
-- A text-only Bonsai 2 27B CLI review ran separately under the local VRAM guard. It reviewed supplied release-readiness notes; it did not run inside Jarvis, change model weights, or add memory to Jarvis.
-- `ModelManager._start()` keeps its detached tray-launch default and adds an opt-in `detached=False` mode for guarded callers. A regression test checks that attached mode omits `DETACHED_PROCESS`; this is process-launch coverage, not Jarvis UI or user-install acceptance.
-- GitHub Actions run [36084658502](https://github.com/nawnie/jarvis-assistant/actions/runs/36084658502) passed on commit `c907dac`, the draft PR head at that time, including dependency installation, `pyflakes`, and the isolated core-test suite. It does not prove live model inference or a clean user-profile install.
+- The private local Watchkeeper source was running with hidden Jarvis launcher processes. A loopback listener was present on `127.0.0.1:8795`; two launcher processes were observed, and this check did not establish why both existed.
+- The local config has `watching` disabled, `llm_autostart_server` enabled, and the 27B away profile disabled. No `llama-server.exe` process or listener on the checked `8084` model port was present at inspection. Model loading or inference was not demonstrated in this snapshot.
+- The private owner file-root policy currently selects `C:\`, `F:\`, and `G:\` for reads and writes, plus the configured Comfy workflow folder. The private local source has additional system-path exclusions for those roots. That policy file and the newer local exclusions are not part of this public PR; the public checkout's narrower defaults and code must be reviewed independently before enabling broader roots on another installation.
+- The private source also contains later revisions and additions, including a broader developer-command allowlist, Comfy workflow and image-feedback helpers, and additional RetroArch/AshE game support. These remain local source changes and are not claimed as features of this PR. Local settings, runtime data, model files, and evidence receipts were not copied into this repository.
 
-## Release milestones
+This inspection did not run tests or a model-backed task. It records process, listener, configuration, policy, and source-file observations only; it does not prove foreground UI behavior, successful model startup, general task completion, or acceptance of the private-only features.
 
-| Milestone | Acceptance evidence | State |
+## Evidence at this checkpoint
+
+| Capability | What was observed | Limit |
 |---|---|---|
-| Reliable offline behavior | Safe sample config; app starts without monitoring or model autostart; status explains endpoint failures without disclosing credentials | Code and isolated checks; restart/live check pending |
-| First-run Windows acceptance | Follow setup from a fresh Windows user profile, configure data and model paths, start and stop cleanly, and verify recovery after endpoint loss and return | Not demonstrated |
-| Conversation MVP | Exercise chat, memory suggestions, explicit KEEP review, and one bounded project objective against the intended local model; retain the test scope and receipt | Not demonstrated through Jarvis's model endpoint |
-| 27B away-work review | Show the configured model fits available VRAM with guard headroom, produces a useful review, and unloads cleanly; keep any file changes proposal-only until user approval | Attached launch support and flag regression test added; Jarvis UI acceptance and a production self-repair flow remain open |
-| User release package | Document install, upgrade, backup, recovery, data location, supported Windows/Python versions, and known limitations; validate on a clean machine | Not demonstrated |
-| Commercial release decision | Obtain separate project-owner license permission and qualified legal review before commercial use | Open; current license is noncommercial |
+| Windows source and offline checks | The installed desktop source matched the reviewed 116-file manifest; the isolated phone snapshot remained at 170 files. Isolated and public desktop tests passed 333 with one absent-private-fixture skip; installed desktop tests passed 334. Earlier exact-head PR Python checks passed at `92ef5c3`. | The checks are source and test evidence. Physical-phone acceptance is open. |
+| Local Bonsai chat and tools | The configured 8B and 27B profiles loaded under guarded, owner-controlled trials and issued native tool calls. Both read a selected fictional file, used a local allowlisted MCP fixture, and selected a phone-folder tool against a fictional ADB adapter. | The fake adapter never read a physical device. Neither profile has been shown to complete arbitrary autonomous project work. |
+| File and project tools | Synthetic tests exercised selected read/write roots, protected-path denial for reads and writes, exact-span patching, registered project tests, and lost-response project lookup. Missing private policy fails closed. Mocked PC-open tests reject `file://` URLs before Windows launch, keep local opens under the mutation policy, and allow HTTPS links. | Ordinary Windows process permissions still apply. The registered test runner is not a filesystem sandbox. The owner policy on this PC currently permits whole-drive C/F/G roots, while the system-path exclusions from the separate private source are not in this public PR. Do not treat local owner policy as portable defaults. The URI checks do not prove a live shell launch. |
+| MCP | Both Bonsai profiles selected discovery and an exact call through a one-tool local stdio fixture. The pinned client checked tool schemas and allowlists. | The fixture used fictional data; external services need separate configuration and acceptance. |
+| Vision | In an isolated guarded trial, Bonsai 8B selected the new ordinary-chat `inspect_image` tool; the compact local eyes read the fixed fictional `A7` image, and both owned servers stopped. The image and pointer-area screen tools also passed synthetic host checks for file roots, size, and private foreground windows. | Direct 27B vision answered `AF` twice for that exact image. Native screen interaction and general image understanding have not been accepted. |
+| ComfyUI | Isolated ComfyUI 0.37.0 generated inspected neutral 384×384 PNGs through direct and Bonsai 8B selected product tools. A later guarded product run confirmed Comfy accepts Jarvis's durable prompt UUID. Source tests cover targeted cancellation, and a real empty-queue endpoint probe returned a truthful no-op. A local fixture resumed a submitted ticket in fresh processes. Settings fields passed a headless save check. A Windows test verified Jarvis's named GPU-start mutex across processes; tests verified that Bonsai and Qwen eyes defer on a busy Comfy queue. | The owner-saved live model remains offline and Comfy generation is disabled until configured. Native UI use, active-job cancellation, actual lost-response handling, live restart recovery, general workflows, and coordination with external GPU clients remain open. |
+| Phone operator console | The companion's signed synthetic emulator fixture displayed a fictional assignment and a desktop project receipt; live source and offline Android build checks passed. | The physical phone, real PC task completion, and third-party AI task acceptance were not demonstrated. |
+| Disposable Windows setup | An exact-head source archive was extracted into a disposable folder. A new Python 3.13 environment installed the pinned runtime requirements and passed `pip check`. With a safe sample config and model control disabled, `run.bat --hidden` started the app through its Pythonw launcher; its database and icon appeared, and no owned TCP listener or traceback was observed during a bounded check. | This used the current Windows login and an offscreen Qt display. QA stopped the owned processes by PID; graceful tray Quit, a separate-user installation, model operation, and visual acceptance remain open. |
+| Native Windows UI | The installed app opened an owned native Windows Qt window at 150% display scaling. A synthetic-data QA process clicked all 13 sidebar destinations and checked the selected page. Window-targeted OS captures of Now and Settings were visually checked. The default window now fits within the available 1280×672 logical desktop. | Programmatic Qt clicks and window captures do not prove screen-reader accessibility, physical input, model operation, or a real task. Private captures include host CLI status and are not public media. |
+| Windows accessibility API | A read-only UI Automation 2.0.29 query of the exact native Jarvis HWND found all 13 sidebar destinations as named, enabled, keyboard-focusable list items. The current Now page tree had 81 nodes and no unnamed interactive controls in the inspected categories. The short-lived host exited normally. | Metadata inspection does not prove keyboard focus order, spoken screen-reader output, accessibility of every page, or owner acceptance. |
+| Visual media | Qt-rendered synthetic Now, Chat, Memory, and Settings views were inspected. | The public synthetic tour remains a page tour, not native Windows capture or a model/task demo. |
+| Private non-model backup | The latest completed local ZIP passed hash, size, forbidden-content, and credential-pattern checks. A temporary restore verified included source rows and passed desktop tests with one absent-private-fixture skip. An earlier archive restore passed 108 phone Windows-companion tests in its pinned Python 3.11 environment and offline Android unit/lint/debug-build gates; its rebuilt APK hash matched the staged QA build. An owner-only Drive copy had name, size, parent, and owner permission metadata read back. | Drive did not provide a remote content checksum. One local-only wiki-drift review file was explicitly excluded. Private owner policies and credentials require separate owner restoration. The APK build is not physical-phone acceptance. |
 
-## Safe learning boundary
+## Before a broader release
 
-Jarvis can use selected activity and recent local Codex or Claude Code request hints only when the matching settings and Watching are enabled. Observations are bounded context, not proof that a project task completed. Durable memory suggestions require review. Observed tasks do not become independent objectives automatically. The planned 27B self-repair path must remain proposal-only, show its evidence and diff, and require explicit approval before applying changes.
+1. Replace or explicitly review original-machine path defaults and protected-project labels before publishing a portable source projection. Keep the host-side privacy denials and owner-controlled test registry effective.
+2. Walk through installation, configuration, app launch, endpoint loss/recovery, memory review, and a bounded project task on a fresh Windows profile. Preserve exact receipts and test data.
+3. Resolve direct 27B vision on a fixed image fixture or document it as unsupported. Verify the screen chat tool on a native desktop. Verify Comfy active-job cancellation, actual response loss, live restart recovery, and coexistence with external GPU clients before claiming general image-generation acceptance.
+4. Validate phone pairing and a bounded action on the intended physical device separately. Keep messages as drafts with final Android send confirmation, and keep risky settings behind owner confirmation.
+5. Complete an accessible native Windows input flow and owner acceptance. Publish only synthetic or fully inspected, cropped media with captions that describe exactly what the capture proves.
+6. Keep model weights, local histories, credentials, device identifiers, and runtime databases out of this repository. Repeat the temporary backup restore when the final source changes; restore private owner policies separately.
 
-## Badges and accreditation
-
-The README badges describe the GitHub Actions workflow, platform, Python/UI stack, model links, and current license. They are not certification marks. No third-party certification or accreditation evidence is documented in the reviewed repository, and none is claimed here.
-
-## Next work
-
-1. Activate the `/status` change through a controlled Jarvis restart and verify the live response while the model endpoint is unavailable.
-2. Recheck endpoint recovery and a real chat turn when the intended model service can be run within the owner's VRAM constraints.
-3. Complete the fresh-profile install, backup/recovery, and bounded project-objective walkthrough.
-4. Add release packaging and a user-facing upgrade path after the acceptance steps above are repeatable.
-5. Keep commercial distribution gated on written license permission and legal review; do not infer permission from repository visibility or CI badges.
+The repository badges describe technology and workflow status, not accreditation. Commercial use remains subject to the [PolyForm Noncommercial license](LICENSE) and separate permission from the project owner.

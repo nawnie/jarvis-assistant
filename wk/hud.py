@@ -618,10 +618,17 @@ class ClockReadout(QWidget):
 class NavDelegate(QStyledItemDelegate):
     """Paints each sidebar entry as '01  NOW', with a lit cut-corner plate on the selected page.
     The item's real text is untouched, so show_page("Timeline") and UI Automation still see 'Timeline'."""
-    ROW = 36
+    ROW, MIN_ROW = 36, 26
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), self.ROW)
+        # rows shrink (down to MIN_ROW) so EVERY page fits without scrolling - with 13 pages a fixed
+        # 36 px row pushed "Now" or "Settings" out of sight on smaller windows, as if they'd vanished.
+        # The list re-lays itself out on resize (setResizeMode(Adjust) in ui._build_sidebar).
+        view = option.widget
+        if view is None or not view.count():
+            return QSize(option.rect.width(), self.ROW)
+        fit = view.viewport().height() // view.count()
+        return QSize(option.rect.width(), max(self.MIN_ROW, min(self.ROW, fit)))
 
     def paint(self, p, option, index):
         p.save()
@@ -917,7 +924,7 @@ class ThinkingBar(Animated):
 
     def __init__(self, label="Analysing", parent=None):
         super().__init__(parent)
-        self.label = label
+        self.label = label        # a string, or a function returning one (read every frame)
         self.setFixedHeight(18)
         self._pos = 0.0
 
@@ -927,11 +934,15 @@ class ThinkingBar(Animated):
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.setFont(font(7.5, UI_FONT_SEMIBOLD, spacing=2.0, caps=True))
+        f = font(7.5, UI_FONT_SEMIBOLD, spacing=2.0, caps=True)
+        p.setFont(f)
         p.setPen(QColor(CYAN))
+        label = self.label() if callable(self.label) else self.label
         dots = "." * (1 + int(self._pos * 3) % 3)
-        p.drawText(QRectF(0, 0, 110, self.height()), Qt.AlignLeft | Qt.AlignVCenter, self.label + dots)
-        x0, x1, y = 112.0, self.width() - 4.0, self.height() / 2
+        # the track starts after the label (measured with room for three dots, so it doesn't jiggle)
+        text_w = QFontMetricsF(f).horizontalAdvance(label + "...") + 10
+        p.drawText(QRectF(0, 0, text_w, self.height()), Qt.AlignLeft | Qt.AlignVCenter, label + dots)
+        x0, x1, y = text_w + 2, self.width() - 4.0, self.height() / 2
         p.setPen(QPen(qcolor(CYAN, 45), 2))
         p.drawLine(QPointF(x0, y), QPointF(x1, y))
         # the runner ping-pongs along the track, with a fading tail

@@ -12,7 +12,9 @@ Anything that touches the GUI/engine timers runs on the GUI thread (GuiCall); sl
 (chat, recall questions) run on the request thread so the window never freezes.
 """
 import hmac
+import hashlib
 import json
+import re
 import secrets
 import threading
 import time
@@ -21,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from . import config, sensors
+from . import assistant_context, config, sensors
 
 MAX_BODY = 16_000
 BOOL_SETTINGS = {"watch_windows", "watch_task_windows", "read_local_task_prompts", "watch_clipboard", "watch_folders", "watch_system", "welcome_back",
@@ -206,6 +208,19 @@ def run_action(engine, gui, body):
         title, goal = _text(body, "title", 120), _text(body, "goal", 4000)
         pid = gui.call(lambda: engine.create_project(title, goal, ""))
         return {"message": "Project added", "id": pid}
+    if action == "operator_project_add":
+        operator_id = _text(body, "operator_id", 32)
+        if not re.fullmatch(r"[0-9a-f]{32}", operator_id):
+            raise ValueError("invalid operator assignment ID")
+        title, goal = _text(body, "title", 80), _text(body, "goal", 3900)
+        full_title = f"{title} [operator:{operator_id}]"
+        def create_once():
+            for project in engine.store.projects():
+                if project["title"] == full_title:
+                    return project["id"]
+            return engine.create_project(full_title, goal, "")
+        pid = gui.call(create_once)
+        return {"message": "Operator project found or added", "id": pid, "operator_id": operator_id}
     if action == "project_status":
         pid, status = _int(body, "id", 1, 2**31), _text(body, "status", 10)
         gui.call(lambda: engine.set_project_status(pid, status))
@@ -233,6 +248,23 @@ def run_action(engine, gui, body):
         engine.data_changed.emit("settings")
         return {"message": f"{key} saved"}
     raise ValueError("unknown action")
+
+
+def operator_project_evidence(engine, ids: list[int]) -> list[dict]:
+    if not isinstance(ids, list) or len(ids) > 100 or any(type(pid) is not int or pid < 1 for pid in ids):
+        raise ValueError("ids must be up to 100 positive project IDs")
+    wanted = set(ids)
+    evidence = []
+    for project in engine.store.projects():
+        if project["id"] not in wanted or not re.search(r"\[operator:[0-9a-f]{32}\]$", project["title"]):
+            continue
+        log = engine.store.project_log(project["id"], 10)
+        evidence.append({"source": "jarvis_project_store", "project_id": project["id"],
+                         "project_status": str(project["status"])[:24],
+                         "steps": int(project["steps"]), "last_worked": project["last_worked"],
+                         "log_count_visible": len(log),
+                         "log_sha256": hashlib.sha256(json.dumps(log, sort_keys=True).encode("utf-8")).hexdigest() if log else None})
+    return evidence
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +307,9 @@ class RemoteAPI:
             def do_GET(self):  # noqa: N802
                 if not self._allowed():
                     return
+                if self.path == "/v1/identity":
+                    self._reply(HTTPStatus.OK, {"ok": True, **assistant_context.instructions_record()})
+                    return
                 if self.path != "/v1/snapshot":
                     self._reply(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
                     return
@@ -283,7 +318,7 @@ class RemoteAPI:
             def do_POST(self):  # noqa: N802
                 if not self._allowed():
                     return
-                if self.path != "/v1/action":
+                if self.path not in ("/v1/action", "/v1/identity", "/v1/operator-projects"):
                     self._reply(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
                     return
                 try:
@@ -297,12 +332,30 @@ class RemoteAPI:
                     body = json.loads(self.rfile.read(size).decode("utf-8"))
                     if not isinstance(body, dict):
                         raise ValueError("body must be a JSON object")
-                    result = run_action(api.engine, api.gui, body)
+                    if self.path == "/v1/identity":
+                        if set(body) != {"text", "expected_sha256"}:
+                            raise ValueError("identity accepts only text and expected_sha256")
+                        result = assistant_context.save_instructions(body["text"], body["expected_sha256"])
+                    elif self.path == "/v1/operator-projects":
+                        if set(body) != {"ids"}:
+                            raise ValueError("operator project lookup accepts only ids")
+                        result = {"projects": operator_project_evidence(api.engine, body["ids"])}
+                    else:
+                        result = run_action(api.engine, api.gui, body)
                 except (ValueError, UnicodeDecodeError) as exc:
                     self._reply(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                     return
                 except TimeoutError as exc:
                     self._reply(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+                    return
+                except RuntimeError as exc:
+                    self._reply(HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+                    return
+                except PermissionError as exc:
+                    self._reply(HTTPStatus.FORBIDDEN, {"ok": False, "error": str(exc)})
+                    return
+                except OSError:
+                    self._reply(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "identity storage unavailable"})
                     return
                 self._reply(HTTPStatus.OK, {"ok": True, **result})
 

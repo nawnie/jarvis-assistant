@@ -24,6 +24,38 @@ if sys.prefix == sys.base_prefix and VENV_SITE.is_dir():
     site.addsitedir(str(VENV_SITE))
 sys.path.insert(0, str(APP_DIR))
 
+
+# ---------------------------------------------------------------------------
+# Black-box log. pythonw has no console, so sys.stderr is None and every Python
+# error, Qt slot exception and native crash used to vanish without a trace (on
+# 2026-09-25 a Jarvis disappeared and nothing recorded why). When there is no
+# console, errors go to data\jarvis-errors.log instead. Each run writes a
+# "start" line and, if it ends normally, an "exit" line, so a start with no exit
+# means Jarvis was killed from outside or crashed natively (faulthandler writes
+# the native stack just before that happens).
+# ---------------------------------------------------------------------------
+def _open_black_box():
+    import atexit
+    import faulthandler
+    import os
+
+    log_path = APP_DIR / "data" / "jarvis-errors.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    # keep the file small: once it passes 1 MB, keep only its newest half
+    if log_path.exists() and log_path.stat().st_size > 1_000_000:
+        tail = log_path.read_bytes()[-500_000:]
+        log_path.write_bytes(tail)
+    log = open(log_path, "a", encoding="utf-8", buffering=1)   # line-buffered: survives a sudden kill
+    stamp = lambda: time.strftime("%Y-%m-%d %H:%M:%S")
+    log.write(f"=== {stamp()} start pid={os.getpid()} args={sys.argv[1:]}\n")
+    sys.stderr = log                       # tracebacks (incl. Qt slot errors and threads) land here
+    faulthandler.enable(file=log)          # native crashes (access violations) dump their stack here
+    atexit.register(lambda: log.write(f"=== {stamp()} exit pid={os.getpid()}\n"))
+
+
+if sys.stderr is None:   # started by pythonw (shortcuts, autostart); a console run keeps normal output
+    _open_black_box()
+
 from wk import instance  # noqa: E402  (must come before anything that opens a window)
 
 # Windows groups taskbar buttons by "App User Model ID". Without our own ID the

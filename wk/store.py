@@ -10,6 +10,7 @@ Tables in plain terms:
   chat      - the chat transcript
 """
 import re
+import json
 import sqlite3
 import threading
 import time
@@ -33,6 +34,13 @@ CREATE TABLE IF NOT EXISTS chat (id INTEGER PRIMARY KEY, ts REAL, role TEXT, tex
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, created REAL, title TEXT, goal TEXT, source_dir TEXT,
     workspace TEXT, status TEXT DEFAULT 'active', steps INTEGER DEFAULT 0, last_worked REAL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS project_log (id INTEGER PRIMARY KEY, project_id INTEGER, ts REAL, kind TEXT, text TEXT);
+CREATE TABLE IF NOT EXISTS assistant_tasks (
+    id INTEGER PRIMARY KEY, created REAL NOT NULL, updated REAL NOT NULL,
+    request TEXT NOT NULL, scope TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '',
+    next_step TEXT NOT NULL DEFAULT '', artifacts_json TEXT NOT NULL DEFAULT '[]',
+    last_receipt_json TEXT NOT NULL DEFAULT '{}', active_model TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'running');
+CREATE INDEX IF NOT EXISTS assistant_tasks_state ON assistant_tasks(state, updated);
 """
 
 
@@ -191,27 +199,83 @@ class Store:
 
     def suggest_fact(self, fact, reason):
         fact = " ".join(fact.split())[:400]
-        self.run("DELETE FROM memory_candidate WHERE ts<?", (time.time() - 30 * 86400,))
-        if not fact or self.rows("SELECT 1 FROM memory WHERE fact=? UNION SELECT 1 FROM memory_candidate WHERE fact=?",
-                                 (fact, fact)):
-            return False
-        self.run("INSERT INTO memory_candidate(ts, fact, reason) VALUES (?,?,?)",
-                 (time.time(), fact, reason[:150]))
-        self.run("DELETE FROM memory_candidate WHERE id NOT IN "
-                 "(SELECT id FROM memory_candidate ORDER BY id DESC LIMIT 100)")
-        return True
+        with self.lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("DELETE FROM memory_candidate WHERE ts<?", (time.time() - 30 * 86400,))
+                if not fact:
+                    self.db.commit()
+                    return False
+                existing = self.db.execute(
+                    "SELECT 1 FROM memory WHERE fact=? UNION "
+                    "SELECT 1 FROM memory_candidate WHERE fact=?", (fact, fact)).fetchone()
+                if existing:
+                    self.db.commit()
+                    return False
+                self.db.execute("INSERT INTO memory_candidate(ts, fact, reason) VALUES (?,?,?)",
+                                (time.time(), fact, reason[:150]))
+                self.db.execute("DELETE FROM memory_candidate WHERE id NOT IN "
+                                "(SELECT id FROM memory_candidate ORDER BY id DESC LIMIT 100)")
+                self.db.commit()
+                return True
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
+
+    def suggest_fact_pending(self, fact, reason):
+        """Add one pending candidate without pruning or reading existing fact contents."""
+        fact = " ".join(fact.split())[:400]
+        with self.lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                if not fact:
+                    self.db.commit()
+                    return False
+                existing = self.db.execute(
+                    "SELECT 1 FROM memory WHERE fact=? UNION "
+                    "SELECT 1 FROM memory_candidate WHERE fact=?", (fact, fact)).fetchone()
+                if existing:
+                    self.db.commit()
+                    return False
+                count = self.db.execute("SELECT COUNT(*) FROM memory_candidate").fetchone()[0]
+                if count >= 100:
+                    self.db.commit()
+                    return None
+                self.db.execute("INSERT INTO memory_candidate(ts, fact, reason) VALUES (?,?,?)",
+                                (time.time(), fact, reason[:150]))
+                self.db.commit()
+                return True
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
+
+    def close(self):
+        """Close this SQLite connection after a short-lived worker is done with it."""
+        with self.lock:
+            self.db.close()
 
     def fact_candidates(self):
         return self.rows("SELECT id, fact, reason FROM memory_candidate ORDER BY id DESC LIMIT 30")
 
     def resolve_candidate(self, candidate_id, keep):
-        rows = self.rows("SELECT fact FROM memory_candidate WHERE id=?", (candidate_id,))
-        if not rows:
-            return False
-        if keep:
-            self.add_fact(rows[0][0])
-        self.run("DELETE FROM memory_candidate WHERE id=?", (candidate_id,))
-        return True
+        with self.lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                row = self.db.execute("SELECT fact FROM memory_candidate WHERE id=?", (candidate_id,)).fetchone()
+                if not row:
+                    self.db.commit()
+                    return False
+                if keep:
+                    self.db.execute("INSERT INTO memory(ts, fact) VALUES (?,?)", (time.time(), row[0]))
+                self.db.execute("DELETE FROM memory_candidate WHERE id=?", (candidate_id,))
+                self.db.commit()
+                return True
+            except Exception:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
 
     # --- chat transcript -------------------------------------------------------
     def add_chat(self, role, text):
@@ -222,6 +286,52 @@ class Store:
 
     def clear_chat(self):
         self.run("DELETE FROM chat")
+
+    # --- durable assistant work, separate from observed project hints ---------
+    TASK_COLUMNS = ("id", "created", "updated", "request", "scope", "plan", "next_step",
+                    "artifacts_json", "last_receipt_json", "active_model", "state")
+
+    def create_assistant_task(self, request, scope, active_model):
+        now = time.time()
+        return self.run("INSERT INTO assistant_tasks(created, updated, request, scope, active_model, state) "
+                        "VALUES (?,?,?,?,?,'running')", (now, now, request[:4000], scope[:500], active_model[:100]))
+
+    def checkpoint_assistant_task(self, task_id, state, next_step="", receipt=None, artifacts=None, plan=None):
+        if state not in ("running", "inflight", "paused", "needs_reconcile", "needs_input", "completed", "failed"):
+            raise ValueError("invalid assistant task state")
+        current = self.assistant_task(task_id)
+        if current is None:
+            raise ValueError("assistant task does not exist")
+        self.run("UPDATE assistant_tasks SET updated=?, state=?, next_step=?, last_receipt_json=?, "
+                 "artifacts_json=?, plan=? WHERE id=?",
+                 (time.time(), state, next_step[:1000], json.dumps(receipt if receipt is not None else current["last_receipt"]),
+                  json.dumps(artifacts if artifacts is not None else current["artifacts"]),
+                  (plan if plan is not None else current["plan"])[:2000], task_id))
+
+    def assistant_task(self, task_id):
+        rows = self.rows("SELECT " + ", ".join(self.TASK_COLUMNS) + " FROM assistant_tasks WHERE id=?", (task_id,))
+        if not rows:
+            return None
+        task = dict(zip(self.TASK_COLUMNS, rows[0]))
+        task["artifacts"] = json.loads(task.pop("artifacts_json"))
+        task["last_receipt"] = json.loads(task.pop("last_receipt_json"))
+        return task
+
+    def assistant_tasks(self, limit=20):
+        ids = self.rows("SELECT id FROM assistant_tasks ORDER BY updated DESC LIMIT ?", (min(max(int(limit), 1), 100),))
+        return [self.assistant_task(row[0]) for row in ids]
+
+    def reconcile_interrupted_assistant_tasks(self):
+        """Quarantine work left active by a prior Jarvis process before any resume."""
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE assistant_tasks SET updated=?, state='needs_reconcile', "
+                "next_step='Inspect the last target and receipt; do not replay an uncertain operation' "
+                "WHERE state IN ('running', 'inflight')",
+                (time.time(),),
+            )
+            self.db.commit()
+            return cur.rowcount
 
     # --- recall: keyword search over everything Jarvis has kept ---------------------------
     @staticmethod

@@ -1,5 +1,5 @@
-"""Ctrl+click "explain this": a global mouse trigger and the sensors that read
-whatever is under the mouse pointer.
+"""Ctrl+Shift+click "explain this" (the combo is a setting): a global mouse trigger and the
+sensors that read whatever is under the mouse pointer.
 
 How it fits together:
   MouseTrigger      - a Windows low-level mouse hook on its own thread. When the
@@ -81,6 +81,24 @@ def _held(vk):
     return bool(user32.GetAsyncKeyState(vk) & 0x8000)
 
 
+# this is the explain-trigger section: which modifier keys fire "explain this" on a left click.
+# Ctrl is always part of it; Shift and Alt must be held exactly when the combo names them, so
+# plain Ctrl+click (open in new tab, multi-select, game controls) is left alone under "ctrl+shift".
+TRIGGER_LABELS = {"ctrl+shift": "Ctrl+Shift+click", "ctrl": "Ctrl+click", "ctrl+alt": "Ctrl+Alt+click"}
+
+
+def trigger_label(combo):
+    """'ctrl+shift' -> 'Ctrl+Shift+click' for menus, tooltips and the event log."""
+    return TRIGGER_LABELS.get(combo or "", "Ctrl+Shift+click")
+
+
+def combo_held(combo):
+    """True when exactly this combo's modifiers are down (read on the hook thread, so it must stay cheap)."""
+    parts = set((combo or "").split("+"))
+    return ("ctrl" in parts and _held(VK_CONTROL)
+            and _held(VK_SHIFT) == ("shift" in parts) and _held(VK_MENU) == ("alt" in parts))
+
+
 # ---------------------------------------------------------------------------
 # The global trigger.
 # Windows calls the hook for EVERY mouse event system-wide, so the callback
@@ -90,7 +108,7 @@ def _held(vk):
 class MouseTrigger(threading.Thread):
     def __init__(self, armed, on_fire, listening=lambda: False, on_click=None, on_error=None, on_hotkey=None,
                  hotkey_wanted=lambda: True):
-        """armed() -> which combo is live right now: "ctrl", "ctrl+alt", or None (off).
+        """armed() -> which combo is live right now: "ctrl+shift", "ctrl", "ctrl+alt", or None (off).
         on_fire(x, y) is called on the hook thread; it must be quick (emit a Qt signal).
         listening() / on_click(): while an info card is open, every ordinary left click is
         reported too (never swallowed) so the card can close when you click elsewhere."""
@@ -118,9 +136,7 @@ class MouseTrigger(threading.Thread):
                     return 1  # eat the release that belongs to the click we ate
                 if wparam == WM_LBUTTONDOWN and (self.accept_injected or not info.flags & LLMHF_INJECTED):
                     combo = self.armed()
-                    wants_alt = combo == "ctrl+alt"
-                    if (combo and _held(VK_CONTROL) and not _held(VK_SHIFT)
-                            and _held(VK_MENU) == wants_alt):
+                    if combo and combo_held(combo):
                         self.on_fire(info.pt.x, info.pt.y)
                         self._swallow_up = True   # only once the explain request is safely handed over
                         return 1  # eat the click: the app underneath never sees it

@@ -103,18 +103,22 @@ DEFAULTS = {
     # swaps out the model you're chatting with in llama chat (port 8080, one model at a time).
     # Ternary Bonsai 8B (2.18 GB) needs the PrismML fork build; mainline llama.cpp rejects its ternary type.
     "llm_base_url": "http://127.0.0.1:8084/v1",
-    "llm_key_file": "",          # 8084 is bound to 127.0.0.1 only and started without a key
+    "llm_key_file": "",          # optional; Jarvis's own server is loopback-only with local-origin CORS
     "llm_model": "ternary-bonsai-8b",  # pinned: a blank name could make a router load a different model
+    "llm_enabled": True,          # explicit online/offline intent; separate from start-at-login
     "llm_autostart_server": True,
     "llm_server_exe": r"F:\Ai_Models\llama.cpp\staged\prism-b10709-cuda133-x64\llama-server.exe",
     "llm_model_file": r"F:\Ai_Models\Language Models\AIWF LLM\GGUF\Ternary-Bonsai-8B\Ternary-Bonsai-8B-PQ2_0.gguf",
     "llm_ctx": 16384,
+    "llm_batch": 2048,           # explicit current llama-server default; receipt identity needs a number
+    "llm_ubatch": 512,           # explicit current llama-server default on staged Prism binary
 
-    # Ctrl+click anywhere to have Jarvis explain what's under the pointer.
-    # "ctrl" = Ctrl+click, "ctrl+alt" = Ctrl+Alt+click (use that if Ctrl+click clashes with an app).
-    # The triggering click is swallowed so the app underneath doesn't also react to it.
+    # Ctrl+Shift+click anywhere to have Jarvis explain what's under the pointer (Shawn's choice,
+    # 2026-09-26: plain Ctrl+click clashed with games and apps). Also "ctrl" = Ctrl+click and
+    # "ctrl+alt" = Ctrl+Alt+click. The triggering click is swallowed so the app underneath
+    # doesn't also react to it. The explanation looks at the pixels too (wk/vision.py).
     "explain_on_click": True,
-    "explain_trigger": "ctrl",
+    "explain_trigger": "ctrl+shift",
 
     # --- always on: keep the PC awake, and use the time you're away ---------------------------
     "keep_pc_awake": True,          # Windows won't sleep while Jarvis runs (the screen can still turn off)
@@ -130,7 +134,11 @@ DEFAULTS = {
     "small_model_idle_seconds": 60,       # require a sustained quiet interval before loading it
     "llm_gpu_layers": 999,          # layers on the GPU (999 = all); 0 runs the model on the CPU    # VRAM the small model gives back when it's swapped out
     "away_free_comfyui": True,      # if ComfyUI is idle (empty queue) and holding VRAM, ask it to unload
-    "comfyui_url": "http://127.0.0.1:8000",
+    "task_focus_27b_enabled": False,  # owner opt-in: complex chat may lease Jarvis-owned 27B for one task
+    "comfyui_url": "http://127.0.0.1:8188",  # Shawn Core's reserved ComfyUI address on this host
+    "comfy_generation_enabled": False,  # owner opt-in; only host-defined workflows are callable
+    "comfy_workflows": {},        # id -> {"checkpoint": "installed-name.safetensors"}
+    "mcp_servers": {},           # only explicitly named, local server definitions; no Codex credential import
     "projects_enabled": True,       # work on active projects while you're away
     "project_steps_per_session": 8,
     "project_session_gap_minutes": 5,
@@ -149,15 +157,47 @@ DEFAULTS = {
 }
 
 
+# A fresh or damaged install must not start observation, model processes, phone
+# access, or unattended work. The owner's saved config can explicitly opt in.
+SAFE_UNCONFIGURED_DEFAULTS = {
+    "watching": False,
+    "watch_windows": False,
+    "watch_task_windows": False,
+    "read_local_task_prompts": False,
+    "watch_clipboard": False,
+    "watch_folders": False,
+    "watch_system": False,
+    "tool_use_8b": False,
+    "memory_capture_mode": "off",
+    "llm_enabled": False,
+    "llm_autostart_server": False,
+    "explain_on_click": False,
+    "keep_pc_awake": False,
+    "away_model_enabled": False,
+    "away_free_comfyui": False,
+    "comfy_generation_enabled": False,
+    "voice_enabled": False,
+    "recall_semantic": False,
+    "projects_enabled": False,
+    "remote_api_enabled": False,
+    "welcome_back": False,
+    "clipboard_error_help": False,
+    "quick_ask_hotkey": False,
+}
+
+
 def load() -> dict:
-    """Read config.json merged over the defaults (missing file = defaults)."""
+    """Read owner settings over safe defaults; missing or invalid config stays off."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cfg = dict(DEFAULTS)
+    cfg.update(SAFE_UNCONFIGURED_DEFAULTS)
     if CONFIG_PATH.exists():
         try:
-            cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+            saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                cfg.update(saved)
         except (OSError, ValueError):
-            pass  # a broken config file should not stop the assistant starting
+            pass  # a broken config file keeps the side-effecting features off
     return cfg
 
 

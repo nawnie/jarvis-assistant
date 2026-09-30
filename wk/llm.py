@@ -6,8 +6,13 @@ The local API key is read from its configured file and sent only in the request 
 """
 import json
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+class UnsupportedToolProtocol(RuntimeError):
+    """The local endpoint rejected native tool-call request fields."""
 
 
 class LocalLLM:
@@ -72,7 +77,13 @@ class LocalLLM:
             self._model = data[0]["id"] if data else "default"
         return self._model
 
-    def chat(self, messages, max_tokens=900, temperature=0.4):
+    def chat_response(self, messages, max_tokens=900, temperature=0.4, tools=None, tool_choice=None,
+                      timeout=300):
+        """Return the complete OpenAI-compatible choice without discarding tool calls.
+
+        The legacy ``chat`` method below deliberately remains text-only for its callers.
+        Tool schemas are supplied only by Jarvis's local registry, never by a document.
+        """
         body = {
             "model": self.model(),
             "messages": messages,
@@ -81,16 +92,31 @@ class LocalLLM:
             # reasoning models otherwise put the whole answer in reasoning_content and leave content blank
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = tool_choice or "auto"
         with self._inflight_lock:
             self.inflight += 1
         try:
             req = urllib.request.Request(self.cfg["llm_base_url"].rstrip("/") + "/chat/completions",
                                          data=json.dumps(body).encode("utf-8"), headers=self._headers())
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                msg = json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+                choice = payload["choices"][0]
+        except urllib.error.HTTPError as exc:
+            if tools and exc.code in (400, 422):
+                raise UnsupportedToolProtocol(f"native tools rejected with HTTP {exc.code}") from None
+            raise self._clean_error(exc) from None
         except Exception as exc:
             raise self._clean_error(exc) from None
         finally:
             with self._inflight_lock:
                 self.inflight -= 1
+        return {"message": choice.get("message") or {},
+                "finish_reason": choice.get("finish_reason"),
+                "usage": payload.get("usage") or {}}
+
+    def chat(self, messages, max_tokens=900, temperature=0.4):
+        response = self.chat_response(messages, max_tokens=max_tokens, temperature=temperature)
+        msg = response["message"]
         return (msg.get("content") or msg.get("reasoning_content") or "").strip()

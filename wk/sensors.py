@@ -146,7 +146,11 @@ def idle_seconds():
     if not user32.GetLastInputInfo(ctypes.byref(info)):
         return 0.0
     # the tick counter wraps every ~49 days; masking keeps the subtraction correct
-    return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+    keyboard_mouse = ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+    # Windows' idle clock ignores game controllers, so a controller session looked like being away
+    # (Claude, 2026-09-26): the most recent of keyboard/mouse and gamepad input wins (wk/gamepad.py)
+    from . import gamepad
+    return min(keyboard_mouse, gamepad.idle_seconds())
 
 
 # ---------------------------------------------------------------------------

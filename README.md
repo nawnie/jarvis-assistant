@@ -14,8 +14,9 @@ A persistent Windows tray assistant for Shawn's AI Embedded Systems work. Jarvis
 
 | Role | Model | Current use |
 |---|---|---|
-| Conversation, memory suggestions, consultation routing | [Ternary Bonsai 8B GGUF](https://huggingface.co/prism-ml/Ternary-Bonsai-8B-gguf) | Small local model; configured for 16K context. |
-| Away work | [Ternary Bonsai 2 27B GGUF](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) | Larger model; configured for 32K context when enabled. |
+| Conversation, bounded tool planning | [Ternary Bonsai 8B GGUF](https://huggingface.co/prism-ml/Ternary-Bonsai-8B-gguf) | Normal local profile; configured for 16K context. |
+| Larger task review | [Ternary Bonsai 2 27B GGUF](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) | On-demand profile; configured for 32K context when enabled. |
+| On-demand image reading with 8B | Qwen2.5-VL 3B GGUF | Separate local eyes service; loaded only when configured and GPU headroom allows. |
 
 The configured PQ2_0 files use [PrismML's llama.cpp build](https://github.com/PrismML-Eng/llama.cpp). Model weights and the inference server are not included in this repository. The current settings use Q8 K/V cache; [PrismML describes Q4 KV as experimental](https://github.com/PrismML-Eng/Bonsai-demo/blob/main/KV-CACHE.md).
 
@@ -23,7 +24,9 @@ The configured PQ2_0 files use [PrismML's llama.cpp build](https://github.com/Pr
 
 - **Now:** mission, memory and tool status, current focus, system gauges, and recent events.
 - **Memory Core:** KEEP / SENSE / ACT / VOICE controls for recall, observation windows, consultations, and reply style. Bonsai 8B can propose facts from Shawn's chat; suggestions need review before joining long-term memory.
-- **Chat and tools:** `/status`, `/settings`, `/files`, `/objectives`, `/tools`, and `/processes` report bounded local state. `/status` checks the configured model endpoint and gives a sanitized reason when it is unavailable. Its output also includes local source, settings, and database paths; redact it before sharing. `/stop PID IDENTITY` acts only on an explicitly selected process. Bonsai 8B can choose one bounded Claude or Codex CLI consultation per reply when enabled; their MCP tools are not passed through.
+- **Chat and tools:** Ordinary model turns can request typed, bounded file inspection, search, exact-span patching, registered project tests, local wiki context, and explicitly configured MCP tools. Host checks enforce owner-selected read/write roots and protected paths; they are not an OS sandbox. Model-supplied arbitrary shell commands are not offered to ordinary turns. `/status`, `/settings`, `/files`, `/objectives`, `/tools`, and `/processes` report bounded local state. `/status` gives a sanitized reason when the model endpoint is unavailable, but also includes local paths that should be redacted before sharing. `/stop PID IDENTITY` acts only on an explicitly selected process. Claude/Codex CLI consultation remains a separate bounded route; their tools are not passed through automatically.
+- **Vision and phone:** When explicitly asked in ordinary chat, local vision can inspect one owner-selected image or the 960×600 screen area around the pointer. Image reads obey owner file roots and size limits; screen inspection checks the foreground window against the private list and drops the capture if focus changes. In one isolated guarded trial, Bonsai 8B selected `inspect_image` and its compact local eyes correctly read a fixed fictional `A7` image. Native screen interaction and broader image understanding remain unverified. Phone file listing, bounded text reads, message drafts, and named settings require the configured paired companion and an authorized device; sending a message still needs a tap on Android. The phone control app is maintained separately and is not included in this repository.
+- **Comfy image generation:** Settings can enable the local Comfy workflow and set its loopback URL and installed checkpoint. A model can then submit a 384×384 image prompt. Jarvis owns the node graph, waits for a sustained quiet GPU, records its prompt ID before submission, and saves a verified PNG only after Comfy reports success. Jarvis uses a Windows named mutex for its own Comfy submissions and Bonsai/Qwen model starts; those starts also inspect Comfy's queue. External GPU programs do not participate in this mutex. A user can request targeted cancellation of a Jarvis job without a global interrupt, including after disabling new generation. The installed ComfyUI accepted a host-chosen prompt ID in a guarded generation trial; active-job cancellation and actual response loss have not been accepted. Comfy must already be running on loopback. The Settings form passed a headless save check; native use remains unverified. See [configuration and limits](COMFY_WORKFLOW.md).
 - **Projects:** an explicit objective can be worked in a bounded project workspace while away. Observed Claude/Codex task prompts are hints for matching an existing objective, not automatic new assignments.
 
 Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent local Codex and Claude Code user requests only when the relevant settings and Watching are enabled. Raw local data stays in `data/`, which is ignored by Git.
@@ -33,12 +36,14 @@ Window titles do not reveal other apps' chat text or drafts. Jarvis reads recent
 1. Install Python 3.13 and create a local environment: `py -3.13 -m venv .venv`.
 2. Install the dependencies: `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 3. Create the runtime settings folder and copy the safe sample: `mkdir data` then `copy config.example.json data\config.json`.
-4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, or the phone API only after reviewing their settings.
+4. Edit `data\config.json` with your own paths to the PrismML server and model GGUF files. Enable model start, sensors, voice listening, semantic Recall, or the phone API only after reviewing their settings.
 5. Start with `run.bat`. The app stays in the tray when its window closes.
+
+Optional local MCP support uses `requirements-mcp.txt` and the disabled `mcp_servers.example.json` template. Select a server and its allowed tools explicitly; a configured server is not automatically trusted. The built-in Comfy workflow has a separate disabled setting and an owner-listed checkpoint; it does not inherit Codex MCP settings. The file/test policy also contains original-machine path defaults. Review and adapt those fixed roots before enabling model file tools on another PC. Missing, invalid, or partial config fails closed for observation, model autostart, phone API, project work, and 8B tools. Selected-root file tools additionally require an owner-managed protected-path policy; see [file and test policy](OWNER_FILE_AND_TEST_POLICY.md). The current local install allows writes only in a selected Jarvis workspace until the owner registers more project roots.
 
 For the supported launcher switch and its effect, see [Launch arguments](docs/LAUNCH_ARGS.md).
 
-The code's defaults include paths for the original development PC. The sample config disables model start and observation so a fresh public checkout does not use those paths or begin monitoring. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`.
+The code's defaults include paths for the original development PC, but a fresh checkout with no valid config does not begin monitoring, open the microphone, build a semantic index, or start a model. The sample config also leaves those features off. For deterministic checks without a model, install `requirements-dev.txt` and run `.venv\Scripts\python.exe -m pytest tests\test_core.py -q`. The [roadmap](ROADMAP.md) separates local source/model tests from first-run, native UI, physical-phone, and image-generation acceptance.
 
 ## License and credit
 
@@ -60,4 +65,6 @@ Captured from isolated UI test data on 2026-09-24. Entries shown are synthetic; 
 
 Additional views: [Chat](screenshots/chat.png), [Projects](screenshots/projects.png), [Settings](screenshots/settings.png).
 
-The 27B self-repair workflow and automatic conversion of observed tasks into independent objectives are planned work. See the [MVP roadmap and release gates](ROADMAP.md) for current evidence and next steps.
+[Watch the synthetic UI tour](media/jarvis-synthetic-ui-tour.mp4). Jarvis Assistant UI tour using fictional Aurora Lab data. Qt page transitions; local model and PC observation disabled for capture.
+
+The tool loop has local synthetic and guarded model tests, including native tool calls from both Bonsai profiles, selected file reads, and local allowlisted MCP calls. A separate synthetic `A7` image test passed through 8B plus compact eyes; direct 27B vision answered `AF` twice and remains a known failure. Isolated local ComfyUI 0.37.0 generated a neutral 384×384 image from an installed SD1.5 checkpoint through both a direct host call and a Bonsai 8B selected product tool sequence. The saved PNGs and hashes were inspected. The live owner's saved model setting remained offline, so this is not native desktop acceptance. The video above shows fictional Qt page transitions, not native Windows screen capture or task completion. See the [MVP roadmap and release gates](ROADMAP.md) for exact evidence limits.
