@@ -6,13 +6,17 @@
 [![PySide6](https://img.shields.io/badge/UI-PySide6-41CD52)](https://doc.qt.io/qtforpython-6/)
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-397D54)](LICENSE)
 
-Dani is the proposed project brand for Jarvis Assistant. The repository rename is pending; for now this project is hosted at [`nawnie/jarvis-assistant`](https://github.com/nawnie/jarvis-assistant), and the in-app name remains Jarvis Assistant. It is an experimental Windows tray app for local activity review, reminders, notes, search, and bounded project work, with a PySide6 desktop interface and configurable local-model features.
+Dani is the in-app name and helpful-assistant direction. The source repository is still [`nawnie/jarvis-assistant`](https://github.com/nawnie/jarvis-assistant); the repository rename is pending. The Windows tray app supports local activity review, reminders, notes, search, bounded project work, and configurable local-model features through a PySide6 desktop interface.
+
+The default Dani appearance uses calm surfaces, readable sentence case, larger controls, keyboard-accessible meters, and reduced motion. **Jarvis Classic** remains available in Settings as the original dark HUD appearance. Changing the appearance is saved locally; quit the app from its tray menu and reopen it to apply the selected theme.
+
+> **Commercial-use status:** This repository still carries the PolyForm Noncommercial 1.0.0 license. This UI redesign does not change or grant commercial rights. Commercial release remains gated on separate owner permission and legal review.
 
 > **Early MVP:** deterministic tests cover selected core behavior. This showcase does not certify a fresh-profile install, live model inference, model recovery, or end-to-end phone integration. Screenshots use synthetic data and do not demonstrate live inference.
 
 ## Explore the app
 
-- **Now** brings together mission, memory and tool status, system gauges, and recent events.
+- **Home** opens with a direct “Ask Dani” prompt, watching status, mission and memory summaries, system readings, and recent events.
 - **Timeline** presents recorded foreground-window activity in stretches, with idle gaps left out. Collection depends on the observation settings.
 - **Clipboard** shows captured copied text. Capture skips windows that match the configured private-title or excluded-app rules.
 - **Reminders** stores timed reminders and can show them from the tray when due while the app is running. Review the settings and runtime behavior before relying on it for critical alerts.
@@ -21,6 +25,7 @@ Dani is the proposed project brand for Jarvis Assistant. The repository rename i
 - **Chat** provides bounded commands for status, settings, files, objectives, tools, and processes. Process stopping requires an explicit process selection.
 - **Recall** searches recorded windows, clipboard entries, journal entries, events, and chat history.
 - **Projects** gives an explicit objective a bounded workspace. Selected source files can be read for context; writes stay in the project workspace. This is an experimental workflow, not unattended self-repair.
+- **Appearance** in Settings switches between Dani and the preserved Jarvis Classic theme.
 
 For the documented setup path, copy `config.example.json` into `data/config.json`: that sample disables observation and model startup. Missing settings fall back to code defaults that enable several sensors and model startup, so create and review the sample configuration before launching. Local runtime data belongs under `data/`, which Git ignores.
 
@@ -49,7 +54,7 @@ The optional loopback API exposes bounded, typed actions and can be paired with 
 
 ## Screenshots
 
-The checked-in captures were made from isolated UI test data on 2026-09-24. Their entries are synthetic; they are not evidence of real activity or live model inference.
+The checked-in captures show the earlier Jarvis Classic appearance and were made from isolated UI test data on 2026-09-24. Their entries are synthetic; they are not evidence of real activity or live model inference. The Dani redesign has not yet received native screen-reader or fresh-profile acceptance.
 
 | Now dashboard | Memory page |
 |---|---|

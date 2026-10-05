@@ -52,6 +52,8 @@ DOWNLOADS = known_folder("374DE290-123F-4565-9164-39C4925E467B", str(Path.home()
 # Default settings. Any key missing from config.json falls back to these.
 # ---------------------------------------------------------------------------
 DEFAULTS = {
+    # Appearance is local to this install. Dani is the default; Jarvis Classic preserves the original HUD.
+    "appearance_theme": "dani",
     # master switch + which sensors are allowed to run
     "watching": True,
     "watch_windows": True,       # which app/window has focus

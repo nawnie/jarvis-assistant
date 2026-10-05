@@ -39,6 +39,32 @@ MUTED = "#7fa6b8"         # secondary text (7:1 on the panel fill)
 AMBER = "#ffb02e"         # warnings: RAM high, model offline, break due
 RED = "#ff5468"           # critical: GPU too hot, RAM nearly full
 IDLE = "#6d8190"          # paused / switched off
+CURRENT_THEME = "jarvis"
+MOTION_ENABLED = True
+
+
+def apply_theme(name):
+    """Apply a named palette before the window is built; the original Jarvis palette stays intact."""
+    global BG, BG_RAISED, CYAN, CYAN_HI, TEXT, MUTED, AMBER, RED, IDLE
+    global UI_FONT, UI_FONT_SEMIBOLD, UI_FONT_LIGHT, BUTTON_FONT, PANEL_FILL, PANEL_EDGE, CURRENT_THEME, MOTION_ENABLED
+    from .themes import THEMES
+    name = name if name in THEMES else "dani"
+    theme = THEMES[name]
+    BG, BG_RAISED = theme["bg"], theme["bg_raised"]
+    CYAN, CYAN_HI, TEXT, MUTED = theme["accent"], theme["accent_hi"], theme["text"], theme["muted"]
+    AMBER, RED, IDLE = theme["amber"], theme["red"], theme["idle"]
+    UI_FONT, UI_FONT_SEMIBOLD = theme["font"], theme["font_semibold"]
+    UI_FONT_LIGHT, BUTTON_FONT = theme["font_light"], theme["button_font"]
+    PANEL_FILL = QColor(theme["panel_fill"])
+    PANEL_EDGE = QColor(theme["panel_edge"])
+    if name == "jarvis":
+        PANEL_FILL = QColor(9, 20, 31, 225)
+        PANEL_EDGE = QColor(56, 214, 255, 62)
+    CURRENT_THEME = name
+    MOTION_ENABLED = name != "dani"
+    global KIND_COLOURS
+    KIND_COLOURS = {"error": RED, "alert": AMBER, "warning": AMBER, "nudge": AMBER, "model": CYAN_HI}
+    return name
 
 # this is the font naming section: Bahnschrift (a DIN-style face that ships with Windows 10+)
 # gives the engineered HUD lettering; Segoe UI stays for long reading text; Cascadia for readouts
@@ -92,15 +118,15 @@ def caps(widget, spacing=1.2):
     The stylesheet still decides the family and size; QSS has no letter-spacing or
     text-transform, and Qt keeps these two font properties when it applies the sheet."""
     f = widget.font()
-    f.setCapitalization(QFont.AllUppercase)
-    f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+    f.setCapitalization(QFont.MixedCase if CURRENT_THEME == "dani" else QFont.AllUppercase)
+    f.setLetterSpacing(QFont.PercentageSpacing, 100) if CURRENT_THEME == "dani" else f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
     widget.setFont(f)
 
 
 def tracked(widget, spacing):
     """Letter spacing only (for labels whose text is already uppercase)."""
     f = widget.font()
-    f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+    f.setLetterSpacing(QFont.PercentageSpacing, 100) if CURRENT_THEME == "dani" else f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
     widget.setFont(f)
 
 
@@ -156,7 +182,11 @@ class Animated(QWidget):
 
     def showEvent(self, event):
         self._last = time.monotonic()
-        self._frame_timer.start()
+        if MOTION_ENABLED:
+            self._frame_timer.start()
+        else:
+            self._frame_timer.stop()
+            self.update()
         super().showEvent(event)
 
     def hideEvent(self, event):
@@ -367,6 +397,10 @@ class RadialGauge(QWidget):
         if self.target is not None and abs(value - self.target) < 0.05:
             return
         self.target = value
+        if not MOTION_ENABLED:
+            self.shown = value
+            self.update()
+            return
         self._anim.stop()
         self._anim.setStartValue(float(self.shown))
         self._anim.setEndValue(value)
@@ -439,6 +473,12 @@ class HudPanel(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if CURRENT_THEME == "dani":
+            p.setPen(QPen(PANEL_EDGE, 1))
+            p.setBrush(PANEL_FILL)
+            p.drawRoundedRect(r, 12, 12)
+            p.end()
+            return
         path = chamfer_path(r, self.CUT)
         p.fillPath(path, PANEL_FILL)
         p.setPen(QPen(PANEL_EDGE, 1))
@@ -485,6 +525,12 @@ class HoloFrame(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(6.5, 6.5, -6.5, -6.5)   # 6 px left free for the glow
+        if CURRENT_THEME == "dani":
+            p.setPen(QPen(PANEL_EDGE, 1))
+            p.setBrush(PANEL_FILL)
+            p.drawRoundedRect(r, 14, 14)
+            p.end()
+            return
         path = chamfer_path(r, self.CUT)
         p.fillPath(path, QColor(7, 17, 27, 244))
         # a faint cyan sheen across the top, like light catching glass
@@ -521,6 +567,13 @@ class HudRule(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         y = self.height() / 2 + 0.5
         w = self.width()
+        if CURRENT_THEME == "dani":
+            p.setPen(QPen(QColor(PANEL_EDGE), 1))
+            p.drawLine(QPointF(0, y), QPointF(w, y))
+            p.setPen(QPen(QColor(CYAN), 3))
+            p.drawLine(QPointF(0, y), QPointF(min(48, w), y))
+            p.end()
+            return
         p.setPen(QPen(qcolor(CYAN, 230), 2))
         p.drawLine(QPointF(0, y), QPointF(min(64, w), y))
         grad = QLinearGradient(64, 0, w, 0)
@@ -548,6 +601,9 @@ class Backdrop(QWidget):
         p = QPainter(self)
         area = event.rect()
         p.fillRect(area, QColor(BG))
+        if CURRENT_THEME == "dani":
+            p.end()
+            return
         # a soft pool of cyan light near the top centre of the page area
         glow = QRadialGradient(QPointF(self.width() * 0.62, -self.height() * 0.15), self.height() * 0.95)
         glow.setColorAt(0, qcolor(CYAN, 20))
@@ -572,6 +628,12 @@ class Sidebar(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
+        if CURRENT_THEME == "dani":
+            p.fillRect(event.rect(), QColor("#eef2f7"))
+            p.setPen(QPen(QColor(PANEL_EDGE), 1))
+            p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+            p.end()
+            return
         p.fillRect(event.rect(), QColor(7, 15, 24, 235))
         x = self.width() - 1
         grad = QLinearGradient(0, 0, 0, self.height())
@@ -621,7 +683,7 @@ class NavDelegate(QStyledItemDelegate):
     ROW = 36
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), self.ROW)
+        return QSize(option.rect.width(), 44 if CURRENT_THEME == "dani" else self.ROW)
 
     def paint(self, p, option, index):
         p.save()
@@ -629,6 +691,21 @@ class NavDelegate(QStyledItemDelegate):
         r = QRectF(option.rect).adjusted(10, 3, -12, -3)
         selected = bool(option.state & QStyle.State_Selected)
         hover = bool(option.state & QStyle.State_MouseOver)
+        if CURRENT_THEME == "dani":
+            if selected:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#dce8f6"))
+                p.drawRoundedRect(r, 9, 9)
+            elif hover:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor("#e8edf4"))
+                p.drawRoundedRect(r, 9, 9)
+            p.setFont(font(10.5, UI_FONT_SEMIBOLD if selected else UI_FONT))
+            p.setPen(QColor(CYAN if selected else TEXT))
+            p.drawText(QRectF(r.left() + 14, r.top(), r.width() - 24, r.height()),
+                       Qt.AlignLeft | Qt.AlignVCenter, index.data())
+            p.restore()
+            return
         # this is the plate behind the entry: lit when selected, a faint wash on hover
         if selected:
             plate = chamfer_path(r, 7)
@@ -776,7 +853,8 @@ def render_chat(view, entries, thinking=False):
         head.setFontLetterSpacingType(QFont.AbsoluteSpacing)
         head.setFontLetterSpacing(1.8)
         head.setForeground(QColor(CYAN) if jarvis else QColor(MUTED))
-        cur.insertText("◆  JARVIS" if jarvis else "▸  YOU", head)
+        sender = "DANI" if CURRENT_THEME == "dani" else "JARVIS"
+        cur.insertText(f"◆  {sender}" if jarvis else "▸  YOU", head)
         # the message body, as markdown, in a clean default format (so it doesn't inherit the header's)
         cur.insertBlock(QTextBlockFormat(), QTextCharFormat())
         cur.setCharFormat(QTextCharFormat())
@@ -826,6 +904,8 @@ class ScanOverlay(_Cover):
         self._anim.finished.connect(self.hide)
 
     def play(self):
+        if not MOTION_ENABLED:
+            return
         if not self.parentWidget().isVisible():
             return
         self._anim.stop()
@@ -866,6 +946,8 @@ class BootOverlay(_Cover):
         self._t0 = 0.0
 
     def play(self):
+        if not MOTION_ENABLED:
+            return
         self._t0 = time.monotonic()
         self._cover()
         self._timer.start()
@@ -964,6 +1046,9 @@ class ScrambleLabel:
         if text == self.target:
             return
         self.target = text
+        if not MOTION_ENABLED:
+            self.label.setText(text)
+            return
         if not self.label.isVisible():
             self.label.setText(text)
             return

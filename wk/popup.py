@@ -41,7 +41,25 @@ QPushButton#x:hover {{ color: {hud.CYAN_HI}; }}
 
 def _card_style(base):
     """The card/ask-bar sheet plus chamfered buttons (their images live in data/ui, drawn at startup)."""
+    if hud.CURRENT_THEME == "dani":
+        return """
+* { font-family: 'Segoe UI'; font-size: 11pt; color: #1f2937; }
+QLabel#cardtitle { font-size: 16pt; font-weight: 600; color: #1f2937; }
+QLabel#cardsub { font-size: 10pt; color: #4b5563; }
+QTextBrowser { background: transparent; border: none; color: #1f2937; }
+QPushButton { background: #ffffff; border: 1px solid #aeb9c8; border-radius: 8px; padding: 8px 14px; min-height: 34px; }
+QPushButton:hover { background: #eef3f9; border-color: #245a9b; }
+QPushButton#primary { background: #245a9b; color: #ffffff; border-color: #245a9b; }
+QLineEdit { background: #ffffff; border: 1px solid #aeb9c8; border-radius: 7px; padding: 8px; min-height: 34px; }
+QLineEdit:focus { border: 2px solid #173e70; }
+QPushButton#x { border: none; background: transparent; font-size: 18pt; color: #4b5563; }
+QPushButton#x:hover { color: #173e70; }
+"""
     return base + hud.button_rules(hud.button_images(config.DATA_DIR / "ui")) + CLOSE_STYLE
+
+
+def _ask_style():
+    return _card_style(ASK_STYLE)
 
 
 def _cyan_links(widget):
@@ -151,11 +169,14 @@ class InfoCard(QWidget):
         self._render(thinking=True)
         self._place(near or QCursor.pos())
         if not self.isVisible():
-            # fade in from transparent (a card that is already up just changes its content)
-            self._fade.stop()
-            self.setWindowOpacity(0.0)
             self.show()
-            self._fade.start()
+            if hud.MOTION_ENABLED:
+                # Fade only in the original Jarvis theme; Dani keeps motion minimal.
+                self._fade.stop()
+                self.setWindowOpacity(0.0)
+                self._fade.start()
+            else:
+                self.setWindowOpacity(1.0)
         self.raise_()
         return self.request_id
 
@@ -384,7 +405,7 @@ class AskBar(QWidget):
         from PySide6.QtWidgets import QLineEdit
         self.engine, self.card = engine, card
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet(ASK_STYLE)
+        self.setStyleSheet(_ask_style())
         self.setFixedWidth(660)
         root = hud.HoloFrame(tag="JARVIS // QUICK ASK")
         outer = QVBoxLayout(self)
@@ -396,7 +417,8 @@ class AskBar(QWidget):
         self.ctx_label = QLabel(objectName="askctx")
         self.ctx_label.setWordWrap(True)
         hud.caps(self.ctx_label, 1.6)
-        self.line = QLineEdit(placeholderText="Ask Jarvis anything  ·  Enter to ask  ·  Esc to close")
+        label = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        self.line = QLineEdit(placeholderText=f"Ask {label} anything  ·  Enter to ask  ·  Esc to close")
         self.line.returnPressed.connect(self._ask)
         lay.addWidget(self.ctx_label)
         # this is the command-line row: a chevron prompt, then the input

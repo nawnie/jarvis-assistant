@@ -61,6 +61,7 @@ def main():
 
     from wk import config
     from wk.brain import Engine
+    from wk import hud
     from wk.ui import MainWindow, Tray, make_icon, save_ico
 
     try:
@@ -68,7 +69,10 @@ def main():
     except (AttributeError, OSError):
         pass  # not on Windows: nothing to fix
     app = QApplication(sys.argv)
-    app.setApplicationName("Jarvis Assistant")
+    engine = Engine()
+    hud.apply_theme(engine.cfg.get("appearance_theme", "dani"))
+    app_name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis Assistant"
+    app.setApplicationName(app_name)
     app.setWindowIcon(make_icon(True))
     app.setQuitOnLastWindowClosed(False)  # closing the window leaves it running in the tray
 
@@ -82,7 +86,6 @@ def main():
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     save_ico(config.ICON_PATH)
 
-    engine = Engine()
     window = MainWindow(engine)
     tray = Tray(engine, window, app)
     tray.show()
