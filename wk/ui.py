@@ -18,13 +18,13 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QAbstractSpinBox, QDialog, QDialogButtonBox, QFileDialog, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter,
     QStackedWidget,
-    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
+    QProgressBar, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 from . import config, hud, popup, sensors
 from .brain import SYSTEM_PERSONA, Engine, run_async
@@ -157,6 +157,19 @@ ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 
 def draw_icon(size: int, active: bool) -> QPixmap:
+    if hud.CURRENT_THEME == "dani":
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#245a9b" if active else "#596579"))
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(QFont("Segoe UI", max(1, int(size * 0.68)), QFont.Bold))
+        painter.drawText(pm.rect(), Qt.AlignCenter, "D")
+        painter.end()
+        return pm
     return hud.draw_reactor_icon(size, active)
 
 
@@ -211,7 +224,49 @@ def ui_images(folder):
 
 
 def build_style():
-    """The app stylesheet with the image tokens replaced by real file paths (forward slashes for Qt)."""
+    """Return the selected theme stylesheet. Dani uses calm surfaces and large, clear controls."""
+    if hud.CURRENT_THEME == "dani":
+        return f"""
+* {{ font-family: 'Segoe UI'; font-size: 11pt; color: #1f2937; }}
+QMainWindow {{ background: #f5f7fb; }}
+QWidget#page {{ background: transparent; }}
+QDialog, QMessageBox, QMenu {{ background: #ffffff; }}
+QScrollArea {{ background: transparent; border: none; }}
+QListWidget#nav {{ background: transparent; border: none; }}
+QLabel#wordmark {{ font-size: 20pt; font-weight: 600; color: #173e70; }}
+QLabel#wordsub {{ font-size: 9pt; color: #4b5563; }}
+QLabel#h1 {{ font-size: 22pt; font-weight: 600; color: #1f2937; }}
+QLabel#muted {{ color: #4b5563; }}
+QLabel#paneltitle {{ font-size: 10pt; font-weight: 600; color: #344054; }}
+QLabel#big {{ font-size: 20pt; color: #1f2937; }}
+QPushButton {{ background: #ffffff; border: 1px solid #aeb9c8; border-radius: 8px;
+    padding: 8px 14px; min-height: 40px; color: #1f2937; }}
+QPushButton:hover {{ background: #eef3f9; border-color: #245a9b; }}
+QPushButton:pressed {{ background: #dce8f6; }}
+QPushButton:disabled {{ color: #596579; background: #edf0f4; }}
+QPushButton#primary {{ background: #245a9b; color: #ffffff; border: 1px solid #245a9b; font-weight: 600; }}
+QPushButton#primary:hover {{ background: #173e70; border-color: #173e70; }}
+QLineEdit, QPlainTextEdit, QTextBrowser, QSpinBox, QComboBox, QTableWidget, QListWidget {{
+    background: #ffffff; border: 1px solid #aeb9c8; border-radius: 7px;
+    selection-background-color: #dce8f6; selection-color: #1f2937; padding: 5px; }}
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 2px solid #173e70; }}
+QAbstractSpinBox, QComboBox {{ min-height: 40px; }}
+QCheckBox {{ spacing: 10px; min-height: 36px; }}
+QCheckBox::indicator {{ width: 20px; height: 20px; border: 2px solid #596579; border-radius: 4px; background: white; }}
+QCheckBox::indicator:checked {{ background: #245a9b; border-color: #245a9b; }}
+QTableView, QListView {{ outline: 0; }}
+QTableView::item:selected, QListView::item:selected {{ background: #dce8f6; color: #1f2937; }}
+QHeaderView::section {{ background: #eef2f7; border: none; padding: 8px; color: #344054; font-weight: 600; }}
+QProgressBar {{ background: #e4e9f0; border: none; border-radius: 5px; height: 14px; text-align: center; }}
+QProgressBar::chunk {{ background: #245a9b; border-radius: 5px; }}
+QScrollBar:vertical {{ background: transparent; width: 14px; }}
+QScrollBar:horizontal {{ background: transparent; height: 14px; }}
+QScrollBar::handle {{ background: #aeb9c8; border-radius: 6px; min-height: 28px; min-width: 28px; }}
+QScrollBar::handle:hover {{ background: #718096; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QToolTip {{ background: #ffffff; color: #1f2937; border: 1px solid #596579; padding: 6px; }}
+*:focus {{ outline: 2px solid #173e70; }}
+"""
     style = STYLE
     for token, path in ui_images(config.DATA_DIR / "ui").items():
         style = style.replace(token, str(path).replace("\\", "/"))
@@ -261,27 +316,31 @@ def hhmm(ts):
 
 # this is the page-building helper section: every page is a titled header plus HUD panels
 def card(title):
-    """A titled cut-corner HUD panel (hud.HudPanel); returns (frame, inner layout)."""
+    """A titled panel; Dani uses sentence case and the Jarvis theme retains spaced capitals."""
     frame = hud.HudPanel()
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(24, 10, 14, 12)
-    head = QLabel(title.upper(), objectName="paneltitle")
-    hud.tracked(head, 1.6)
+    lay.setContentsMargins(*(18, 12, 18, 16) if hud.CURRENT_THEME == "dani" else (24, 10, 14, 12))
+    shown_title = title if hud.CURRENT_THEME == "dani" else title.upper()
+    head = QLabel(shown_title, objectName="paneltitle")
+    if hud.CURRENT_THEME != "dani":
+        hud.tracked(head, 1.6)
     frame.title_label = head        # the panel paints its cyan tab and rule beside this label
     lay.addWidget(head)
     return frame, lay
 
 
 def page(title, subtitle=""):
-    """A page: its title in spaced capitals over a HUD rule, then an optional one-line explanation."""
+    """A page with a clear title and an optional explanation."""
     w = QWidget(objectName="page")
     lay = QVBoxLayout(w)
     lay.setContentsMargins(22, 16, 22, 18)
     lay.setSpacing(12)
     head = QVBoxLayout()
     head.setSpacing(2)
-    h1 = QLabel(title.upper(), objectName="h1")
-    hud.tracked(h1, 5)
+    shown_title = title if hud.CURRENT_THEME == "dani" else title.upper()
+    h1 = QLabel(shown_title, objectName="h1")
+    if hud.CURRENT_THEME != "dani":
+        hud.tracked(h1, 5)
     head.addWidget(h1)
     head.addWidget(hud.HudRule())
     lay.addLayout(head)
@@ -295,7 +354,7 @@ def table(headers):
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
     t.verticalHeader().hide()
-    t.verticalHeader().setDefaultSectionSize(30)
+    t.verticalHeader().setDefaultSectionSize(40 if hud.CURRENT_THEME == "dani" else 30)
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setShowGrid(False)
@@ -332,9 +391,78 @@ class WheelOnlyWhenFocused(QObject):
         return False
 
 
+class DaniEmblem(QLabel):
+    """A quiet, static brand mark for the reduced-motion Dani appearance."""
+    def __init__(self):
+        super().__init__("D", alignment=Qt.AlignCenter)
+        self.setAccessibleName("Dani, helpful AI")
+        self.setFixedSize(56, 56)
+        self.setStyleSheet("background:#dce8f6; color:#173e70; border-radius:28px; font-size:24pt; font-weight:600;")
+
+    def set_mode(self, _mode):
+        pass
+
+
+class DaniStatus(QFrame):
+    """Text-first activity status that does not rely on color or animated gauges."""
+    def __init__(self):
+        super().__init__()
+        self.state = QLabel("Ready", objectName="big")
+        self.detail = QLabel("", objectName="muted")
+        self.detail.setWordWrap(True)
+        box = QVBoxLayout(self)
+        box.addWidget(self.state)
+        box.addWidget(self.detail)
+
+    def set_mode(self, mode):
+        self.state.setText({"online": "Watching", "paused": "Paused", "offline": "Model offline"}.get(mode, mode))
+
+    def set_readout(self, readout, caption="", _value=None):
+        self.detail.setText(f"Active time: {readout}  ·  {caption}")
+
+
+class DaniGauge(QWidget):
+    """A labeled, keyboard-readable system meter for the Dani appearance."""
+    def __init__(self, label, unit):
+        super().__init__()
+        self.unit = unit
+        self.maximum = 110 if unit == "°C" else 100
+        self.warning = self.maximum
+        self.critical = self.maximum
+        self.value_label = QLabel("Not reported", objectName="muted")
+        self.bar = QProgressBar()
+        self.bar.setMaximum(self.maximum)
+        self.bar.setTextVisible(False)
+        self.bar.setAccessibleName(f"{label} level")
+        self.bar.setAccessibleDescription("System activity reading")
+        self.bar.setFocusPolicy(Qt.StrongFocus)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.bar)
+
+    def set_limits(self, warning, critical):
+        self.warning, self.critical = warning, critical
+
+    def set_value(self, value):
+        if value is None:
+            self.value_label.setText("Not reported")
+            self.bar.setValue(0)
+            self.bar.setAccessibleDescription("No current system reading")
+            return
+        value = max(0, min(self.maximum, int(value)))
+        suffix = "%" if self.unit == "%" else self.unit
+        self.value_label.setText(f"{value}{suffix}")
+        color = "#a61b1b" if value >= self.critical else ("#815000" if value >= self.warning else "#245a9b")
+        self.bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
+        self.bar.setValue(value)
+        self.bar.setAccessibleDescription(f"{value}{suffix}; warning at {self.warning:g}{suffix}")
+
+
 def llm_error(result):
+    name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
     return (f"Local model unreachable ({result}).\n"
-            "Jarvis starts its model server by itself; it may still be loading - try again in a few seconds.")
+            f"{name} starts its model server by itself; it may still be loading - try again in a few seconds.")
 
 
 # ===========================================================================
@@ -345,7 +473,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.engine = engine
         self.store = engine.store
-        self.setWindowTitle("Jarvis Assistant")
+        self.theme = hud.apply_theme(engine.cfg.get("appearance_theme", "dani"))
+        self.setWindowTitle("Dani — Helpful AI" if self.theme == "dani" else "Jarvis Assistant")
         self.setWindowIcon(make_icon(True))
         self.resize(1120, 740)
         self.setStyleSheet(build_style())
@@ -385,7 +514,8 @@ class MainWindow(QMainWindow):
         # every button renders in spaced HUD capitals (text() is unchanged; see hud.caps)
         for button in self.findChildren(QPushButton):
             hud.caps(button, 1.1)
-        hud.style_titlebar(self)          # Windows 11: the title bar itself goes HUD navy + cyan
+        if hud.CURRENT_THEME == "jarvis":
+            hud.style_titlebar(self)      # the original Jarvis theme colors the Windows title bar
 
         # the floating info card: Ctrl+click anywhere, or click an app in Today / Timeline
         self.card = popup.InfoCard()
@@ -415,19 +545,23 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self):
         """Left column: the reactor emblem and wordmark, the page list, and a chronometer."""
         side = hud.Sidebar()
-        side.setFixedWidth(184)
+        side.setFixedWidth(216 if hud.CURRENT_THEME == "dani" else 184)
         v = QVBoxLayout(side)
         v.setContentsMargins(0, 14, 0, 10)
         v.setSpacing(0)
         # the emblem mirrors Jarvis's state: spins while watching, races while the model works
-        self.emblem = hud.ArcReactor(62, show_text=False, busy_fn=self._model_busy)
+        self.emblem = DaniEmblem() if hud.CURRENT_THEME == "dani" else hud.ArcReactor(62, show_text=False, busy_fn=self._model_busy)
         v.addWidget(self.emblem, 0, Qt.AlignHCenter)
-        mark = QLabel("J.A.R.V.I.S.", objectName="wordmark", alignment=Qt.AlignHCenter)
-        hud.tracked(mark, 4)
+        mark = QLabel("Dani", objectName="wordmark", alignment=Qt.AlignHCenter)
+        if hud.CURRENT_THEME == "jarvis":
+            mark.setText("J.A.R.V.I.S.")
+            hud.tracked(mark, 4)
         v.addSpacing(6)
         v.addWidget(mark)
-        sub = QLabel("LOCAL ASSISTANT", objectName="wordsub", alignment=Qt.AlignHCenter)
-        hud.tracked(sub, 2.4)
+        sub = QLabel("YOUR HELPFUL AI", objectName="wordsub", alignment=Qt.AlignHCenter)
+        if hud.CURRENT_THEME == "jarvis":
+            sub.setText("LOCAL ASSISTANT")
+            hud.tracked(sub, 2.4)
         v.addWidget(sub)
         v.addSpacing(12)
         # the page list: painted by hud.NavDelegate, but its items keep their plain names
@@ -452,11 +586,12 @@ class MainWindow(QMainWindow):
                  f"Local model link · {cfg['llm_base_url'].replace('http://', '')}",
                  "Sensors · windows · clipboard · system",
                  "All systems online" if self.engine.watching else "Standing by · watching paused"]
-        hud.BootOverlay(self.centralWidget(), [line.upper() for line in lines]).play()
+        if hud.CURRENT_THEME == "jarvis":
+            hud.BootOverlay(self.centralWidget(), [line.upper() for line in lines]).play()
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not event.spontaneous():
+        if hud.CURRENT_THEME == "jarvis" and not event.spontaneous():
             self.scan.play()          # coming back from the tray: sweep the current page in
 
     def _quick_ask(self):
@@ -501,7 +636,8 @@ class MainWindow(QMainWindow):
                    8: self._refresh_projects}
         if row in refresh:
             refresh[row]()
-        self.scan.play()              # the HUD scan line sweeps the new page in
+        if hud.CURRENT_THEME == "jarvis":
+            self.scan.play()          # the original HUD scan line sweeps the new page in
 
     def _on_data(self, area):
         if area == "events":
@@ -525,7 +661,10 @@ class MainWindow(QMainWindow):
     # NOW page: live dashboard
     # -----------------------------------------------------------------------
     def _build_now(self):
-        w, lay = page("Now")
+        is_dani = hud.CURRENT_THEME == "dani"
+        w, lay = page("Home" if is_dani else "Now",
+                      "Dani is your helpful AI. Ask a question, find something you worked on, or review what Dani remembers."
+                      if is_dani else "")
 
         # on/off row
         row = QHBoxLayout()
@@ -538,6 +677,22 @@ class MainWindow(QMainWindow):
         row.addWidget(pause_btn)
         row.addWidget(self.toggle_btn)
         lay.addLayout(row)
+
+        if is_dani:
+            f, l = card("What can I help with?")
+            welcome = QLabel("Start with a question. Open Chat for a longer conversation.",
+                             objectName="muted", wordWrap=True)
+            l.addWidget(welcome)
+            ask_row = QHBoxLayout()
+            self.home_prompt = QLineEdit(placeholderText="Ask Dani a question…")
+            self.home_prompt.setAccessibleName("Ask Dani")
+            self.home_prompt.returnPressed.connect(self._ask_dani_home)
+            self.home_ask_button = QPushButton("Ask Dani", objectName="primary", clicked=self._ask_dani_home)
+            self.home_ask_button.setAccessibleName("Send question to Dani")
+            ask_row.addWidget(self.home_prompt, 1)
+            ask_row.addWidget(self.home_ask_button)
+            l.addLayout(ask_row)
+            lay.addWidget(f)
 
         # Compact mission readout: durable intent, saved context, and callable links.
         mission_row = QHBoxLayout()
@@ -564,7 +719,7 @@ class MainWindow(QMainWindow):
         grid.setSpacing(10)
         # the arc reactor shows the active streak; its ring fills up toward the break nudge
         f, l = card("Active streak")
-        self.reactor = hud.ArcReactor(124, busy_fn=self._model_busy)
+        self.reactor = DaniStatus() if hud.CURRENT_THEME == "dani" else hud.ArcReactor(124, busy_fn=self._model_busy)
         l.addWidget(self.reactor, 0, Qt.AlignHCenter)
         l.addStretch(1)
         grid.addWidget(f, 0, 0)
@@ -592,8 +747,9 @@ class MainWindow(QMainWindow):
         for col, (key, label, unit) in enumerate((("cpu", "CPU", "%"), ("ram", "RAM", "%"), ("gpu", "GPU", "%"),
                                                   ("gpu_temp", "GPU temp", "°C"))):
             f, l = card(label)
-            l.setContentsMargins(24, 10, 14, 8)
-            gauge = hud.RadialGauge(unit)
+            if hud.CURRENT_THEME == "jarvis":
+                l.setContentsMargins(24, 10, 14, 8)
+            gauge = DaniGauge(label, unit) if hud.CURRENT_THEME == "dani" else hud.RadialGauge(unit)
             l.addWidget(gauge, 1)
             self.gauges[key] = gauge
             grid.addWidget(f, 1, col)
@@ -628,8 +784,15 @@ class MainWindow(QMainWindow):
     def _sync_toggle(self):
         on = self.engine.watching
         self.toggle_btn.setText("Pause watching" if on else "Resume watching")
-        if on:
-            self.state_label.setText(f"<span style='color:{ACCENT}'>◆</span>&nbsp;&nbsp;Watching")
+        if hud.CURRENT_THEME == "dani":
+            if on:
+                self.state_label.setText("Watching is on")
+            elif self.engine.paused_until:
+                self.state_label.setText(f"Watching paused until {hhmm(self.engine.paused_until)}")
+            else:
+                self.state_label.setText("Watching is off; no activity is being recorded")
+        elif on:
+            self.state_label.setText(f"<span style='color:{hud.CYAN}'>●</span>&nbsp;&nbsp;Watching")
         elif self.engine.paused_until:
             self.state_label.setText(f"<span style='color:{hud.AMBER}'>◇</span>&nbsp;&nbsp;Paused until "
                                      f"{hhmm(self.engine.paused_until)}")
@@ -950,7 +1113,8 @@ class MainWindow(QMainWindow):
     # MEMORY page
     # -----------------------------------------------------------------------
     def _build_memory(self):
-        w, lay = page("Memory", "Saved facts and Jarvis's continuity settings. Also from chat: /remember <fact>")
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        w, lay = page("Memory", f"Saved facts and {name}'s continuity settings. Also from chat: /remember <fact>")
         row = QHBoxLayout()
         self.mem_text = QLineEdit(placeholderText="e.g. My main project is AIWF Studio on F:\\")
         row.addWidget(self.mem_text, 1)
@@ -1030,7 +1194,9 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("/status   /settings   /files   /handoff   /remember …", objectName="muted"))
         lay.addLayout(row)
         row = QHBoxLayout()
-        self.chat_in = QLineEdit(placeholderText="Ask anything - e.g. 'what was that error I copied earlier?'")
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        self.chat_in = QLineEdit(placeholderText=f"Ask {name} a question…")
+        self.chat_in.setAccessibleName(f"Message {name}")
         self.chat_in.returnPressed.connect(self._send_chat)
         self.chat_btn = QPushButton("Send", objectName="primary", clicked=self._send_chat)
         row.addWidget(self.chat_in, 1)
@@ -1046,7 +1212,22 @@ class MainWindow(QMainWindow):
             entries.append(("user", pending_text))
         hud.render_chat(self.chat_view, entries, thinking=pending)
 
+    def _ask_dani_home(self):
+        if getattr(self, "_chat_pending", False):
+            return
+        question = self.home_prompt.text().strip()
+        if not question:
+            self.home_prompt.setFocus()
+            return
+        self.home_prompt.clear()
+        self.chat_in.setText(question)
+        self.show_page("Chat")
+        self.chat_in.setFocus()
+        self._send_chat()
+
     def _send_chat(self):
+        if getattr(self, "_chat_pending", False):
+            return
         text = self.chat_in.text().strip()
         if not text:
             return
@@ -1070,12 +1251,20 @@ class MainWindow(QMainWindow):
             return self._render_chat()
 
         # normal message: the engine stores it, asks the model and stores the reply (same path the phone uses)
+        self._chat_pending = True
         self.chat_btn.setEnabled(False)
+        self.chat_in.setEnabled(False)
+        self.home_prompt.setEnabled(False) if hasattr(self, "home_prompt") else None
+        self.home_ask_button.setEnabled(False) if hasattr(self, "home_ask_button") else None
         include = self.chat_ctx.isChecked()
         self._render_chat(pending=True, pending_text=text)
 
         def done(_result):
+            self._chat_pending = False
             self.chat_btn.setEnabled(True)
+            self.chat_in.setEnabled(True)
+            self.home_prompt.setEnabled(True) if hasattr(self, "home_prompt") else None
+            self.home_ask_button.setEnabled(True) if hasattr(self, "home_ask_button") else None
             self._render_chat()
 
         run_async(lambda: self.engine.chat_reply(text, include), done)
@@ -1086,7 +1275,8 @@ class MainWindow(QMainWindow):
     STATUS_LABEL = {"active": "active", "paused": "paused", "needs_input": "needs your input", "done": "done"}
 
     def _build_projects(self):
-        w, lay = page("Projects", "Give Jarvis work to do while you're away. It reads your folder (read-only) and "
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        w, lay = page("Projects", f"Give {name} work to do while you're away. It reads your folder (read-only) and "
                                   "writes its results into its own workspace folder.")
         row = QHBoxLayout()
         row.addWidget(QPushButton("New project", objectName="primary", clicked=self._new_project))
@@ -1110,7 +1300,7 @@ class MainWindow(QMainWindow):
         self.pj_view = QTextBrowser()
         rl.addWidget(self.pj_view, 1)
         answer_row = QHBoxLayout()
-        self.pj_answer = QLineEdit(placeholderText="Answer Jarvis's question...")
+        self.pj_answer = QLineEdit(placeholderText=f"Answer {name}'s question...")
         self.pj_answer.returnPressed.connect(self._project_answer)
         self.pj_answer_btn = QPushButton("Send answer", clicked=self._project_answer)
         answer_row.addWidget(self.pj_answer, 1)
@@ -1248,14 +1438,16 @@ class MainWindow(QMainWindow):
     # RECALL page: search everything Jarvis has kept, or ask a question about it
     # -----------------------------------------------------------------------
     def _build_recall(self):
-        w, lay = page("Recall", "Search everything Jarvis has seen - windows, clipboard, journal, chat - "
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        w, lay = page("Recall", f"Search everything {name} has seen - windows, clipboard, journal, chat - "
                                 "or ask a question about it.")
         row = QHBoxLayout()
         self.rc_query = QLineEdit(placeholderText="e.g.  llama.cpp   ·   or ask:  when did I last work on the AIWF installer?")
         self.rc_query.returnPressed.connect(self._recall_search)
         row.addWidget(self.rc_query, 1)
         row.addWidget(QPushButton("Search", clicked=self._recall_search))
-        self.rc_ask_btn = QPushButton("Ask Jarvis", objectName="primary", clicked=self._recall_ask)
+        self.rc_ask_btn = QPushButton("Ask Dani" if hud.CURRENT_THEME == "dani" else "Ask Jarvis",
+                                      objectName="primary", clicked=self._recall_ask)
         row.addWidget(self.rc_ask_btn)
         lay.addLayout(row)
         split = QSplitter(Qt.Vertical)
@@ -1295,10 +1487,12 @@ class MainWindow(QMainWindow):
         self._recall_search()
         matches = popup.memory_matches(self.engine, query, limit=40)
         if not matches:
-            self.rc_view.setMarkdown("_Nothing in Jarvis's memory matches that. Try different words._")
+            name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+            self.rc_view.setMarkdown(f"_Nothing in {name}'s memory matches that. Try different words._")
             return
         self.rc_ask_btn.setEnabled(False)
-        self.rc_view.setMarkdown("_Jarvis is looking through what it remembers..._")
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+        self.rc_view.setMarkdown(f"_{name} is looking through what it remembers..._")
 
         def done(result):
             self.rc_ask_btn.setEnabled(True)
@@ -1307,7 +1501,7 @@ class MainWindow(QMainWindow):
         run_async(lambda: self.engine.llm.chat([
             {"role": "system", "content": SYSTEM_PERSONA},
             {"role": "user", "content":
-                f"It is now {time.strftime('%A %H:%M')}. Records from Jarvis's memory that match "
+                f"It is now {time.strftime('%A %H:%M')}. Records from {name}'s memory that match "
                 f"Shawn's question (best matches first; 'window' = a window he had open, with total time):\n"
                 f"{matches}\n\nQuestion: {query}\n\nAnswer using ONLY these records, talking to him as 'you'. "
                 "Quote the time label exactly as written in the record (e.g. 'yesterday 19:54') - don't "
@@ -1329,6 +1523,15 @@ class MainWindow(QMainWindow):
         cfg = self.engine.cfg
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
+        self.s_theme = QComboBox()
+        self.s_theme.addItem("Dani — clear, calm and readable", "dani")
+        self.s_theme.addItem("Jarvis Classic — original HUD theme", "jarvis")
+        self.s_theme.setCurrentIndex(max(0, self.s_theme.findData(cfg.get("appearance_theme", "dani"))))
+        self.s_theme.setAccessibleName("Appearance theme")
+        form.addRow("Appearance", self.s_theme)
+        form.addRow("Theme details", QLabel("Dani uses a calm, readable interface with larger controls and reduced motion. "
+                                              "Jarvis Classic preserves the original dark HUD appearance.",
+                                              objectName="muted", wordWrap=True))
         self.s_checks = {}
         for key, label in (("watch_windows", "Track focused windows"),
                            ("watch_task_windows", "Track visible Claude/Codex window titles while unfocused"),
@@ -1394,6 +1597,7 @@ class MainWindow(QMainWindow):
         self.s_url.setText(cfg["llm_base_url"])
         self.s_model.setText(cfg["llm_model"])
         self.s_explain.setChecked(bool(cfg["explain_on_click"]))
+        self.s_theme.setCurrentIndex(max(0, self.s_theme.findData(cfg.get("appearance_theme", "dani"))))
 
     def _save_settings(self):
         cfg = dict(self.engine.cfg)
@@ -1408,11 +1612,13 @@ class MainWindow(QMainWindow):
         cfg["llm_model"] = self.s_model.text().strip()
         cfg["explain_on_click"] = self.s_explain.isChecked()
         cfg["explain_trigger"] = self.s_trigger.currentData()
+        cfg["appearance_theme"] = self.s_theme.currentData()
         if cfg["autostart"] != self.s_autostart.isChecked():
             cfg["autostart"] = self.s_autostart.isChecked()
             set_autostart(cfg["autostart"])
         self.engine.save_config(cfg)
-        QMessageBox.information(self, "Jarvis Assistant", "Settings saved.")
+        self.theme = cfg["appearance_theme"]
+        QMessageBox.information(self, "Dani", "Settings saved. Quit Dani from the tray and reopen it to apply the selected theme.")
 
 
 # ===========================================================================
@@ -1439,8 +1645,9 @@ class Tray(QSystemTrayIcon):
     def __init__(self, engine: Engine, window: MainWindow, app):
         super().__init__(make_icon(engine.watching))
         self.engine, self.window = engine, window
+        self.assistant_name = "Dani" if engine.cfg.get("appearance_theme", "dani") == "dani" else "Jarvis Assistant"
         menu = QMenu()
-        menu.addAction("Open Jarvis Assistant", self.open_window)
+        menu.addAction(f"Open {self.assistant_name}", self.open_window)
         menu.addAction("Chat…", lambda: self.open_window("Chat"))
         menu.addSeparator()
         self.watch_action = QAction("Watching", menu, checkable=True, checked=engine.watching)
@@ -1474,7 +1681,7 @@ class Tray(QSystemTrayIcon):
         self.watch_action.blockSignals(True)
         self.watch_action.setChecked(on)
         self.watch_action.blockSignals(False)
-        self.setToolTip("Jarvis Assistant - watching" if on else "Jarvis Assistant - paused")
+        self.setToolTip(f"{self.assistant_name} - watching" if on else f"{self.assistant_name} - paused")
 
     def _say(self, title, message, action=None):
         self._click_action = action
