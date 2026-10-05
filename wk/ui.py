@@ -266,7 +266,7 @@ QScrollBar::handle:hover {{ background: #718096; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QToolTip {{ background: #ffffff; color: #1f2937; border: 1px solid #596579; padding: 6px; }}
 *:focus {{ outline: 2px solid #173e70; }}
-"""
+""".format()
     style = STYLE
     for token, path in ui_images(config.DATA_DIR / "ui").items():
         style = style.replace(token, str(path).replace("\\", "/"))
