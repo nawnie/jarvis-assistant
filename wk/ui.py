@@ -226,7 +226,7 @@ def ui_images(folder):
 def build_style():
     """Return the selected theme stylesheet. Dani uses calm surfaces and large, clear controls."""
     if hud.CURRENT_THEME == "dani":
-        return f"""
+        return """
 * {{ font-family: 'Segoe UI'; font-size: 11pt; color: #1f2937; }}
 QMainWindow {{ background: #f5f7fb; }}
 QWidget#page {{ background: transparent; }}
