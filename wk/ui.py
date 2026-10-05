@@ -1340,8 +1340,9 @@ class MainWindow(QMainWindow):
     def _show_project(self):
         p = self._selected_project()
         self._pj_sel = p["id"] if p else None
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
         if not p:
-            self.pj_view.setMarkdown("_No project selected. Use **New project** to give Jarvis something to work on "
+            self.pj_view.setMarkdown(f"_No project selected. Use **New project** to give {name} something to work on "
                                      "while you're away._")
         else:
             log = []
@@ -1350,7 +1351,7 @@ class MainWindow(QMainWindow):
             question = ""
             if p["status"] == "needs_input":
                 asked = [t for _, k, t in self.store.project_log(p["id"], 60) if k == "question"]
-                question = f"> **Jarvis is asking:** {asked[-1] if asked else ''}\n\n"
+                question = f"> **{name} is asking:** {asked[-1] if asked else ''}\n\n"
             self.pj_view.setMarkdown(
                 f"### {p['title']}\n\n{question}**Goal:** {p['goal']}\n\n"
                 f"**Reads from:** {p['source_dir'] or '(no folder)'}  \n**Writes to:** {p['workspace']}\n\n"
@@ -1370,17 +1371,18 @@ class MainWindow(QMainWindow):
         self.pj_answer_btn.setEnabled(asking)
 
     def _new_project(self):
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
         dialog = QDialog(self)
         dialog.setWindowTitle("New project")
         dialog.setMinimumWidth(520)
         form = QFormLayout(dialog)
         title = QLineEdit(placeholderText="e.g. Tidy up the AIWF Studio README")
         goal = QPlainTextEdit()
-        goal.setPlaceholderText("What should Jarvis produce? What does 'done' look like?")
+        goal.setPlaceholderText(f"What should {name} produce? What does 'done' look like?")
         goal.setFixedHeight(120)
-        folder = QLineEdit(placeholderText="optional - a folder Jarvis may READ")
+        folder = QLineEdit(placeholderText=f"optional - a folder {name} may read")
         browse = QPushButton("Browse...", clicked=lambda: folder.setText(
-            QFileDialog.getExistingDirectory(dialog, "Folder Jarvis may read") or folder.text()))
+            QFileDialog.getExistingDirectory(dialog, f"Folder {name} may read") or folder.text()))
         folder_row = QHBoxLayout()
         folder_row.addWidget(folder, 1)
         folder_row.addWidget(browse)
@@ -1417,7 +1419,8 @@ class MainWindow(QMainWindow):
         if p:
             try:
                 if not self.engine.work_on_project_now(p["id"]):
-                    QMessageBox.information(self, "Projects", "Jarvis is already working on a project.")
+                    name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
+                    QMessageBox.information(self, "Projects", f"{name} is already working on a project.")
             except ValueError as exc:
                 QMessageBox.information(self, "Projects", str(exc))
             self._refresh_projects()
@@ -1513,6 +1516,7 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------------
     def _build_settings(self):
         w, outer = page("Settings", "Everything here is stored in data\\config.json next to the app.")
+        name = "Dani" if hud.CURRENT_THEME == "dani" else "Jarvis"
         # the form is taller than the window, so it lives in a scroll area
         scroll = QScrollArea(widgetResizable=True, frameShape=QFrame.NoFrame)
         inner = QWidget(objectName="page")
@@ -1540,8 +1544,8 @@ class MainWindow(QMainWindow):
                            ("welcome_back", "Welcome me back with what I was doing after a break"),
                            ("clipboard_error_help", "When I copy an error, work out the fix in the background"),
                            ("quick_ask_hotkey", "Ctrl+Alt+J opens the quick-ask bar from anywhere"),
-                           ("keep_pc_awake", "Keep the PC awake while Jarvis runs (the screen can still turn off)"),
-                           ("llm_autostart_server", "Start Jarvis's dedicated local model when the app opens"),
+                           ("keep_pc_awake", f"Keep the PC awake while {name} runs (the screen can still turn off)"),
+                           ("llm_autostart_server", f"Start {name}'s dedicated local model when the app opens"),
                            ("away_model_enabled", "While I'm away, switch to Bonsai 2 27B"),
                            ("away_free_comfyui", "...and ask an idle ComfyUI to unload its models to make room"),
                            ("projects_enabled", "While I'm away, work on my active projects")):
@@ -1578,7 +1582,7 @@ class MainWindow(QMainWindow):
         self.s_trigger.addItem("Ctrl + Alt + click (if Ctrl+click clashes with an app)", "ctrl+alt")
         self.s_trigger.setCurrentIndex(max(0, self.s_trigger.findData(cfg["explain_trigger"])))
         form.addRow("Explain trigger", self.s_trigger)
-        self.s_autostart = QCheckBox("Start Jarvis Assistant when Windows starts (in the tray)", checked=bool(cfg["autostart"]))
+        self.s_autostart = QCheckBox(f"Start {name} when Windows starts (in the tray)", checked=bool(cfg["autostart"]))
         form.addRow("", self.s_autostart)
         lay.addLayout(form)
         lay.addWidget(QPushButton("Configure memory, personality & replies…",
